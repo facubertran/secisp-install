@@ -27,11 +27,11 @@ exporters:
   - id: rtr-borde-1             # → flows_raw.exporter_id. Único. NO puede empezar con 'ip:'
     addresses:                  # TODAS las IPs desde las que exporta este equipo
       - 203.0.113.1              #   loopback
-      - 2001:db8::1               #   la misma caja, por v6
+    #  - 2001:db8::1               #   la misma caja, por v6
     sampling_override: 0        # se usa SOLO si no informa el rate in-band
     seq_mode: record             # la secuencia cuenta REGISTROS, no datagramas
     enabled: true
-    notes: "CCR2216 RouterOS 7.14, IPFIX a :2055"
+    notes: "CCR2216 RouterOS, IPFIX a :2055"
 
     # ── Inventario y operación ──────────────────────────────────────────────
     hostname: br1.bsas
@@ -43,18 +43,18 @@ exporters:
     inactive_timeout_seconds: 15
     expect_tcp_flags: true      # se contrasta con lo observado (§4.6.2)
     expect_if_direction: true
-    expect_ipv6: true
+    expect_ipv6: false
     mitigation_enabled: true    # ¿E11 aplica address-lists acá? Distinto de "exporta"
     ifaces:
       - { if_index: 1, if_name: sfp-plus1, if_role: upstream, speed_bps: 10000000000 }
       - { if_index: 12, if_name: bridge-lan, if_role: internal }
 
   # ── Overrides por observation domain (base de E01 §5.5) ──────────────────
-  - id: bng-1
-    addresses: [203.0.113.2]
-    role: bng
-    sampling_override: 100      # muestrea 1:100 y NO lo informa en banda
-    obs_domains:                # el dominio 7 muestrea distinto que el resto
-      - { id: 0, sampling_override: 100 }
-      - { id: 7, sampling_override: 1 }   # 1 = declara explícitamente que NO muestrea
-    mitigation_enabled: false
+  #- id: bng-1
+  #  addresses: [203.0.113.2]
+  #  role: bng
+  #  sampling_override: 100      # muestrea 1:100 y NO lo informa en banda
+  #  obs_domains:                # el dominio 7 muestrea distinto que el resto
+  #    - { id: 0, sampling_override: 100 }
+  #    - { id: 7, sampling_override: 1 }   # 1 = declara explícitamente que NO muestrea
+  #  mitigation_enabled: false
