@@ -81,7 +81,7 @@ routers:
     username: secisp
     password_env: SEC_MIT_PW_RTR_BORDE_1
     tls:
-      mode: pin
+      mode: insecure
       fingerprint: "SHA256:9f2a...c1"
     enabled: true
     role: border
@@ -89,34 +89,16 @@ routers:
     max_rps: 20
     max_concurrency: 4
 
-  - name: rtr-borde-2
-    host: 10.199.0.3
-    port: 443
-    username: secisp
-    password_env: SEC_MIT_PW_RTR_BORDE_2
-    tls:
-      mode: pin
-      fingerprint: "SHA256:3b7e...a0"
-    enabled: true
-    role: border
-    serves_prefixes: []
-    max_rps: 20
-    max_concurrency: 4
-
-  # Router de laboratorio: certificado autofirmado, CA propia importada (ver
-  # tls.ca_file arriba). Para probar SIN fingerprint/CA fijados todavía, correr
-  # el proceso mitigator con SEC_MIT_TLS_INSECURE=true en vez de escribir
-  # tls.mode=insecure acá -- este archivo nunca acepta ese valor (T-393).
-  - name: rtr-lab
-    host: 192.168.100.1
-    port: 443
-    username: secisp
-    password_env: SEC_MIT_PW_RTR_LAB
-    tls:
-      mode: verify
-      ca_file: /etc/secisp/rtr-lab-ca.pem
-    enabled: false
-    role: core
-    serves_prefixes: []
-    max_rps: 10
-    max_concurrency: 2
+#  - name: rtr-borde-2
+#    host: 10.199.0.3
+#    port: 443
+#    username: secisp
+#    password_env: SEC_MIT_PW_RTR_BORDE_2
+#    tls:
+#      mode: insecure
+#      fingerprint: "SHA256:3b7e...a0"
+#    enabled: true
+#    role: border
+#    serves_prefixes: []
+#    max_rps: 20
+#    max_concurrency: 4

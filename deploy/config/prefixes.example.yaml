@@ -14,36 +14,42 @@ defaults:
 prefixes:
   # ══ Clientes ══════════════════════════════════════════════════════════════
   # ── Cliente, mitad IPv4: PRIVADA. Exportación pre-NAT, sin CGNAT (P6, §4.1.4) ──
-  - prefix: 10.20.0.0/16
+  - prefix: 10.0.0.0/8
     customer_id: ""
-    label: "pool residencial norte — IPv4 privada, es lo que ve el collector"
+    label: "all 10"
+  - prefix: 172.16.0.0/12
+    customer_id: ""
+    label: "all 172"
+  - prefix: 192.168.0.0/16
+    customer_id: ""
+    label: "all 192"
   # ── Cliente, mitad IPv6: GUA pública. IPv6 no se natea ────────────────────
-  - prefix: 2001:db8:1000::/40
-    label: "pool residencial norte v6 — el MISMO cliente, dirección pública"
+  #- prefix: 2001:db8:1000::/40
+  #  label: "pool residencial norte v6 — el MISMO cliente, dirección pública"
   # ── Cliente con IP pública fija: convive con los dos de arriba ────────────
-  - prefix: 198.51.100.0/28
-    scope: customer
-    label: "clientes corporativos con /32 fijo, sin NAT"
+  #- prefix: 198.51.100.0/28
+  #  scope: customer
+  #  label: "clientes corporativos con /32 fijo, sin NAT"
 
   # ══ Infraestructura propia ════════════════════════════════════════════════
-  - prefix: 203.0.113.10/32
+  - prefix: 10.215.6.0/24
     scope: infra
-    label: "MX saliente — no es un cliente"
+    label: "Red servidores"
   - prefix: 203.0.113.64/26
     scope: infra
     label: "pool de NAT: nunca aparece como src_ip, pero es la IP que miran las DNSBL"
-  - prefix: 192.0.2.0/28
-    scope: infra
-    label: "caché de CDN interna (P15) — sin esto es el falso positivo nº 1 del día 1"
+  #- prefix: 192.0.2.0/28
+  #  scope: infra
+  #  label: "caché de CDN interna (P15) — sin esto es el falso positivo nº 1 del día 1"
 
   # ══ Excepción puntual con vencimiento (D-N1) ══════════════════════════════
-  - prefix: 198.51.100.7/32
-    scope: customer
-    customer_id: AB-10457
-    ignore_src: true
-    label: "servidor de backup del cliente, falso positivo confirmado 2026-03-14"
-    owner: jperez
-    expires_at: 2026-09-14T00:00:00Z
+#  - prefix: 198.51.100.7/32
+#    scope: customer
+#    customer_id: AB-10457
+#    ignore_src: true
+#    label: "servidor de backup del cliente, falso positivo confirmado 2026-03-14"
+#    owner: jperez
+#    expires_at: 2026-09-14T00:00:00Z
 
   # ══ Seed de exclusiones conocidas (§4.4.3) ════════════════════════════════
   # Tráfico DNS agregado normal de un ISP (decenas de abonados consultando a
