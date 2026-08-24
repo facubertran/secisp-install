@@ -11,8 +11,8 @@ services:
   grafana:
     environment:
       GF_SERVER_HTTP_ADDR: ""
-      GF_SERVER_PROTOCOL: "https"
-      GF_SERVER_CERT_FILE: "/etc/grafana/tls/grafana.crt"
-      GF_SERVER_CERT_KEY: "/etc/grafana/tls/grafana.key"
+      GF_SERVER_PROTOCOL: "http"
+      #GF_SERVER_CERT_FILE: "/etc/grafana/tls/grafana.crt"
+      #GF_SERVER_CERT_KEY: "/etc/grafana/tls/grafana.key"
     volumes:
       - ${GRAFANA_TLS_DIR:-./tls}:/etc/grafana/tls:ro
