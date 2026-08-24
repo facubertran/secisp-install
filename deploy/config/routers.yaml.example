@@ -79,9 +79,9 @@ routers:
     host: 10.199.0.2
     port: 443
     username: secisp
-    password_env: SEC_MIT_PW_RTR_BORDE_1
+    password_env: SEC_MIT_PW
     tls:
-      mode: insecure
+      mode: pin
       fingerprint: "SHA256:9f2a...c1"
     enabled: true
     role: border
@@ -93,9 +93,9 @@ routers:
 #    host: 10.199.0.3
 #    port: 443
 #    username: secisp
-#    password_env: SEC_MIT_PW_RTR_BORDE_2
+#    password_env: SEC_MIT_PW
 #    tls:
-#      mode: insecure
+#      mode: pin
 #      fingerprint: "SHA256:3b7e...a0"
 #    enabled: true
 #    role: border
