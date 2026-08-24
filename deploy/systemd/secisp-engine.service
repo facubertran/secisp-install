@@ -1,0 +1,33 @@
+# Unidad systemd del rol engine de secisp (T-035 · E12a-T03).
+# Análoga a secisp-collector.service (E12 §4.3): mismo hardening y Type=notify;
+# no bindea ningún socket de red de entrada (solo /metrics en loopback), así
+# que no lleva la nota sobre capacidades de red del collector.
+[Unit]
+Description=secisp engine (motor de detección)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=secisp
+Group=secisp
+ExecStart=/usr/local/bin/secisp engine --config /etc/secisp/config.yaml
+Environment=SEC_ROLE=engine
+Environment=SEC_METRICS_ADDR=127.0.0.1:9102
+EnvironmentFile=-/etc/secisp/engine.env
+
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/secisp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+Restart=always
+RestartSec=2
+# KillSignal por defecto (SIGTERM) + margen para drenar el ciclo de detección en curso:
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

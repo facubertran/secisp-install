@@ -1,0 +1,209 @@
+{
+  "uid": "secisp-atacantes",
+  "title": "SECISP · Atacantes y destinos",
+  "description": "Home: qué está pasando ahora mismo, sin tener que saber la IP de antemano -- contesta \"¿hay algo pasando?\" y \"¿quién es?\" antes de saltar al detalle. Es el subconjunto MVP de la fila A (estado) y B1 (tabla de atacantes) de docs/specs/E10-grafana-panel.md §4.3: ninguna vista nueva, isp.v_attackers_now/isp.v_attack_events/isp.v_attack_victims/isp.v_ops_blind ya existían y estaban otorgadas a secisp_ro sin que ningún panel las usara. Deliberadamente NO incluye las filas C/D/E (víctimas, mitigación, explicabilidad) ni los dashboards secundarios secisp-atacante/secisp-victima del spec completo -- el drill-down real hoy es secisp-ip (13-ip.json), no un dashboard que no existe.",
+  "tags": ["secisp", "home", "seguridad"],
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["30s", "1m", "5m", "15m"],
+    "quick_ranges": ["now-15m", "now-1h", "now-6h", "now-24h", "now-7d"]
+  },
+  "links": [
+    { "type": "dashboards", "title": "SECISP", "tags": ["secisp"], "asDropdown": false,
+      "includeVars": true, "keepTime": true }
+  ],
+  "annotations": { "list": [] },
+  "templating": { "list": [
+    { "name": "ds_ch", "type": "datasource", "query": "grafana-clickhouse-datasource",
+      "current": { "text": "SECISP ClickHouse", "value": "secisp-clickhouse" }, "hide": 2 },
+    { "name": "score_min", "type": "custom", "label": "Score mínimo",
+      "query": "0,30,60,80", "current": { "text": "0", "value": "0" } },
+    { "name": "attack_class", "type": "custom", "label": "Clase", "multi": true,
+      "includeAll": true, "allValue": null,
+      "query": "scan,smtp_spam,ddos_out,reflection,amplification,anomaly,policy,other",
+      "current": { "text": "All", "value": "$__all" } },
+    { "name": "include_shadow", "type": "custom", "label": "Incluir shadow",
+      "query": "No : 0,Sí : 1", "current": { "text": "Sí", "value": "1" } },
+    { "name": "top_n", "type": "custom", "label": "Top N",
+      "query": "10,20,50,100", "current": { "text": "20", "value": "20" } }
+  ]},
+  "panels": [
+    {
+      "id": 1, "type": "text",
+      "title": "Cómo usar este dashboard",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "Las 6 fichas de arriba resumen si hay algo pasando ahora mismo (ventana fija de los últimos 3 min, el time picker de arriba NO las afecta -- a propósito, para no confundir \"activo ahora\" con \"pasó en algún momento del rango\"). La tabla de abajo sí respeta el time picker y las variables **Score mínimo**/**Clase**/**Incluir shadow**/**Top N**. Clickeá cualquier fila para ir al detalle de esa IP en **SECISP · Investigación por IP** con el mismo rango de tiempo, y el `case_id` para ir al histórico forense de ese caso.\n\n**`Incluir shadow` arranca en Sí**: hoy la mayoría de los detectores corre en modo `shadow` (E05 §4.12, el default de todo detector nuevo -- ver `deploy/config/config.engine.example.yaml`), o sea que generan evento pero no accionan mitigación. Con `Incluir shadow = No` este dashboard puede verse vacío aunque el motor esté viendo tráfico anómalo. Subilo a `No` una vez que los detectores que te importan estén en `alert`/`mitigate`.\n\n**Alcance deliberado**: este es el subconjunto MVP (fila A + B1) del dashboard `secisp-atacantes` que diseña `docs/specs/E10-grafana-panel.md` §4.3 -- no tiene las filas de víctimas/mitigación/explicabilidad ni los dashboards secundarios `secisp-atacante`/`secisp-victima`, que siguen sin construir."
+      }
+    },
+    {
+      "id": 2, "type": "stat", "title": "Atacantes activos",
+      "description": "Casos vivos ahora mismo (isp.v_attackers_now, ventana fija de 3 min -- D5). Es lo primero que hay que mirar: ¿hay algo pasando ahora?",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT count() AS value FROM isp.v_attackers_now WHERE peak_score >= $score_min AND $__conditionalAll(attack_class IN (${attack_class:singlequote}), $attack_class) SETTINGS log_comment = 'secisp:atacantes:A1', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
+                   "textMode": "value", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] }
+    },
+    {
+      "id": 3, "type": "stat", "title": "Confirmados sin acción",
+      "description": "Casos en estado confirmed sin ninguna acción de mitigación aplicada -- el gap entre \"lo vimos\" y \"hicimos algo\". En fase dry-run es normal que sea igual al total de atacantes activos.",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT count() AS value FROM isp.v_attackers_now WHERE state = 'confirmed' AND mitigation_count = 0 AND peak_score >= $score_min SETTINGS log_comment = 'secisp:atacantes:A2', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
+                   "textMode": "value", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] }
+    },
+    {
+      "id": 4, "type": "stat", "title": "Víctimas distintas (1 h)",
+      "description": "IPs destino distintas golpeadas en la última hora (isp.v_attack_victims). Dimensiona el daño hacia afuera: pocas es un incidente puntual, miles es carpet bombing.",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT uniqExact(victim_ip) AS value FROM isp.v_attack_victims WHERE window_start >= now() - INTERVAL 1 HOUR AND (suppressed = 0 OR $include_shadow = 1) SETTINGS log_comment = 'secisp:atacantes:A3', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
+                   "textMode": "value", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] }
+    },
+    {
+      "id": 5, "type": "stat", "title": "Tráfico de ataque (Mbps)",
+      "description": "Mbps sumados de todos los casos activos con tasa reciente (isp.v_attackers_now, últimos 3 min). ¿Es solo un problema de reputación o además de capacidad?",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT round(sum(bps_now) / 1e6, 1) AS value FROM isp.v_attackers_now WHERE staleness_s <= 180 SETTINGS log_comment = 'secisp:atacantes:A4', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
+                   "textMode": "value", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "unit": "Mbits", "decimals": 1 }, "overrides": [] }
+    },
+    {
+      "id": 6, "type": "stat", "title": "Score máximo activo",
+      "description": "Peor score entre los casos activos (E00 §4.3.3: >=80 justifica corte total, <=59 nada acciona solo).",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT max(peak_score) AS value FROM isp.v_attackers_now SETTINGS log_comment = 'secisp:atacantes:A5', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
+                   "textMode": "value", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "decimals": 0,
+        "thresholds": { "mode": "absolute", "steps": [
+          { "color": "green", "value": null }, { "color": "yellow", "value": 30 },
+          { "color": "orange", "value": 60 }, { "color": "red", "value": 80 } ] }
+      }, "overrides": [] }
+    },
+    {
+      "id": 7, "type": "stat", "title": "Pipeline",
+      "description": "Estado del camino de datos (isp.v_ops_blind). Rojo = el resto de este dashboard no es confiable: puede haber ataques invisibles.",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT severity_num AS value, status_text AS text FROM isp.v_ops_blind SETTINGS log_comment = 'secisp:atacantes:A8', use_query_cache = 1, query_cache_ttl = 5"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
+                   "textMode": "value_and_name", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": {
+        "mappings": [
+          { "type": "value", "options": { "0": { "text": "OK",        "color": "green",  "index": 0 },
+                                          "1": { "text": "DEGRADADO", "color": "orange", "index": 1 },
+                                          "2": { "text": "CIEGO",     "color": "red",    "index": 2 } } }
+        ],
+        "thresholds": { "mode": "absolute", "steps": [
+          { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 2 } ] }
+      }, "overrides": [] }
+    },
+    {
+      "id": 8, "type": "table", "title": "Atacantes -- rango seleccionado",
+      "description": "Un origen por fila, con toda la evidencia resumida: clase de ataque, peor score, detectores que lo vieron, a cuántos destinos/puertos le pegó. Click en el atacante para ver su detalle completo en SECISP · Investigación por IP; click en case_id para el histórico forense de ese caso. Filtra por $score_min/$attack_class/$include_shadow y respeta el time picker (a diferencia de las fichas de arriba, que son siempre \"ahora\"). \"Todo shadow\" y \"Acciones\" son dos señales DISTINTAS: un atacante puede tener detectores mezclados (uno en shadow, otro ya en alert/mitigate) -- \"Todo shadow\"=0 no dice que se mitigó, dice que al menos un evento no era shadow; \"Acciones\" (isp.v_det_cases.mitigation_count) es la confirmación real de que el mitigador escribió algo.",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 9 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT e.attacker_label AS \"Atacante\", e.src_ip_str AS \"IP origen\", e.identity AS \"Identidad\", e.attack_class AS \"Clase\", max(e.score) AS \"Score\", round(max(e.confidence), 2) AS \"Conf\", round(max(e.bps) / 1e6, 1) AS \"Mbps pico\", round(max(e.pps)) AS \"pps pico\", max(e.uniq_dst_ips) AS \"Destinos\", max(e.uniq_dst_ports) AS \"Puertos\", groupUniqArray(10)(e.service) AS \"Servicios\", groupUniqArray(6)(e.detector_id) AS \"Detectores\", count() AS \"Eventos\", min(e.window_start) AS \"Desde\", max(e.window_end) AS \"Hasta\", max(e.sampling_max) AS \"Sampling\", min(e.suppressed) AS \"Todo shadow\", max(ifNull(c.mitigation_count, 0)) AS \"Acciones\", any(e.case_id) AS case_id, any(e.src_ip_str) AS src_key FROM isp.v_attack_events AS e LEFT JOIN isp.v_det_cases AS c ON e.case_id = c.case_id WHERE $__timeFilter(e.window_start) AND e.score >= $score_min AND (e.suppressed = 0 OR $include_shadow = 1) AND e.src_ignored = 0 AND $__conditionalAll(e.attack_class IN (${attack_class:singlequote}), $attack_class) GROUP BY e.attacker_label, e.src_ip_str, e.identity, e.attack_class ORDER BY \"Score\" DESC, \"Mbps pico\" DESC LIMIT $top_n SETTINGS log_comment = 'secisp:atacantes:B1', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
+                   "sortBy": [{ "displayName": "Score", "desc": true }] },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
+                                  "filterable": true, "inspect": false } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Atacante" },
+            "properties": [
+              { "id": "custom.width", "value": 200 },
+              { "id": "links", "value": [
+                { "title": "Detalle del atacante",
+                  "url": "/d/secisp-ip/?var-src_ip=${__data.fields.src_key}&${__url_time_range}",
+                  "targetBlank": false } ] } ] },
+          { "matcher": { "id": "byName", "options": "Score" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                  { "color": "green",  "value": null },
+                  { "color": "yellow", "value": 30 },
+                  { "color": "orange", "value": 60 },
+                  { "color": "red",    "value": 80 } ] } },
+              { "id": "custom.width", "value": 70 } ] },
+          { "matcher": { "id": "byName", "options": "Clase" },
+            "properties": [ { "id": "mappings", "value": [ { "type": "value", "options": {
+                "scan":          { "text": "Escaneo",                 "index": 0 },
+                "smtp_spam":     { "text": "Spam SMTP",                "index": 1 },
+                "ddos_out":      { "text": "DDoS saliente",            "index": 2 },
+                "reflection":    { "text": "Reflexión/amplificación",  "index": 3 },
+                "amplification": { "text": "Amplificación",            "index": 4 },
+                "anomaly":       { "text": "Anomalía de tráfico",      "index": 5 },
+                "policy":        { "text": "Violación de política",    "index": 6 },
+                "other":         { "text": "Otro",                     "index": 7 } } } ] } ] },
+          { "matcher": { "id": "byName", "options": "Identidad" },
+            "properties": [ { "id": "mappings", "value": [ { "type": "value", "options": {
+                "subscriber":   { "text": "abonado",             "color": "green",  "index": 0 },
+                "shared_infra": { "text": "infra",                "color": "orange", "index": 1 },
+                "ip_only":      { "text": "prefijo sin cliente",  "color": "red",    "index": 2 } } } ] } ] },
+          { "matcher": { "id": "byName", "options": "Todo shadow" },
+            "properties": [
+              { "id": "description", "value": "1 = TODOS los eventos de este origen en el rango eran de detectores en shadow (nunca disparan acción, E05-09). 0 = al menos uno no lo era -- pero eso NO confirma que se haya mitigado, solo que había un candidato; mirá la columna Acciones para la confirmación real." },
+              { "id": "mappings", "value": [ { "type": "value", "options": {
+                "0": { "text": "",       "index": 0 },
+                "1": { "text": "shadow", "color": "purple", "index": 1 } } } ] } ] },
+          { "matcher": { "id": "byName", "options": "Acciones" },
+            "properties": [
+              { "id": "description", "value": "isp.v_det_cases.mitigation_count del caso de este origen -- cuántas acciones de mitigación reales aplicó el mitigador. 0 no distingue \"nunca se evaluó\" de \"se evaluó y se decidió no accionar (dry_run/skip)\": para el detalle completo, ver Acciones de mitigación en SECISP · Investigación por IP." },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                  { "color": "transparent", "value": null }, { "color": "blue", "value": 1 } ] } } ] },
+          { "matcher": { "id": "byName", "options": "Mbps pico" },
+            "properties": [ { "id": "unit", "value": "Mbits" }, { "id": "decimals", "value": 1 } ] },
+          { "matcher": { "id": "byName", "options": "case_id" },
+            "properties": [
+              { "id": "custom.width", "value": 110 },
+              { "id": "links", "value": [
+                { "title": "Histórico forense de este caso",
+                  "url": "/d/secisp-forense/?var-case_id=${__value.raw}&${__url_time_range}",
+                  "targetBlank": false } ] } ] },
+          { "matcher": { "id": "byName", "options": "src_key" },
+            "properties": [ { "id": "custom.hidden", "value": true } ] }
+        ]
+      }
+    }
+  ]
+}

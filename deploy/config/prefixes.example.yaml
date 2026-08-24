@@ -1,0 +1,64 @@
+# prefixes.yaml — inventario declarativo de prefijos de red.
+#
+# docs/specs/E04-enriquecimiento-y-configuracion.md §4.11 (formato) y §4.4
+# (reglas de validación V01..V14) y §4.4.3 (seed de exclusiones conocidas).
+#
+# Validado con: secisp config validate --prefixes prefixes.yaml
+# Aplicado con: secisp config apply --prefixes prefixes.yaml --reason "..."
+
+version: 1
+defaults:
+  scope: customer
+  owner: noc
+
+prefixes:
+  # ══ Clientes ══════════════════════════════════════════════════════════════
+  # ── Cliente, mitad IPv4: PRIVADA. Exportación pre-NAT, sin CGNAT (P6, §4.1.4) ──
+  - prefix: 10.20.0.0/16
+    customer_id: ""
+    label: "pool residencial norte — IPv4 privada, es lo que ve el collector"
+  # ── Cliente, mitad IPv6: GUA pública. IPv6 no se natea ────────────────────
+  - prefix: 2001:db8:1000::/40
+    label: "pool residencial norte v6 — el MISMO cliente, dirección pública"
+  # ── Cliente con IP pública fija: convive con los dos de arriba ────────────
+  - prefix: 198.51.100.0/28
+    scope: customer
+    label: "clientes corporativos con /32 fijo, sin NAT"
+
+  # ══ Infraestructura propia ════════════════════════════════════════════════
+  - prefix: 203.0.113.10/32
+    scope: infra
+    label: "MX saliente — no es un cliente"
+  - prefix: 203.0.113.64/26
+    scope: infra
+    label: "pool de NAT: nunca aparece como src_ip, pero es la IP que miran las DNSBL"
+  - prefix: 192.0.2.0/28
+    scope: infra
+    label: "caché de CDN interna (P15) — sin esto es el falso positivo nº 1 del día 1"
+
+  # ══ Excepción puntual con vencimiento (D-N1) ══════════════════════════════
+  - prefix: 198.51.100.7/32
+    scope: customer
+    customer_id: AB-10457
+    ignore_src: true
+    label: "servidor de backup del cliente, falso positivo confirmado 2026-03-14"
+    owner: jperez
+    expires_at: 2026-09-14T00:00:00Z
+
+  # ══ Seed de exclusiones conocidas (§4.4.3) ════════════════════════════════
+  # Tráfico DNS agregado normal de un ISP (decenas de abonados consultando a
+  # un mismo resolver público por UDP/53) matchea patrones de amplificación
+  # con apenas ~1.000 pps agregados. Se excluye como destino, no como origen:
+  # ignore_dst evita que E11 actúe contra estos resolvers, sin dejar de
+  # detectar el tráfico en sí.
+  - { prefix: 8.8.8.8/32, scope: external, ignore_dst: true, label: google-dns, owner: seed }
+  - { prefix: 8.8.4.4/32, scope: external, ignore_dst: true, label: google-dns, owner: seed }
+  - { prefix: 1.1.1.1/32, scope: external, ignore_dst: true, label: cloudflare-dns, owner: seed }
+  - { prefix: 1.0.0.1/32, scope: external, ignore_dst: true, label: cloudflare-dns, owner: seed }
+  - { prefix: 9.9.9.9/32, scope: external, ignore_dst: true, label: quad9-dns, owner: seed }
+  - { prefix: 149.112.112.112/32, scope: external, ignore_dst: true, label: quad9-dns, owner: seed }
+  - { prefix: 208.67.222.222/32, scope: external, ignore_dst: true, label: opendns, owner: seed }
+  - { prefix: 208.67.220.220/32, scope: external, ignore_dst: true, label: opendns, owner: seed }
+  # Dual-stack, que el prototipo no podía expresar:
+  - { prefix: '2001:4860:4860::8888/128', scope: external, ignore_dst: true, label: google-dns, owner: seed }
+  - { prefix: '2606:4700:4700::1111/128', scope: external, ignore_dst: true, label: cloudflare-dns, owner: seed }

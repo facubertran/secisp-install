@@ -1,0 +1,59 @@
+# deploy/grafana/provisioning/datasources/secisp.yml — E10 §4.10.2.
+#
+# Provisioning por archivo, no por API: es el camino de PRODUCCIÓN (§4.10.2/
+# §4.10.3, literal — `secisp dashboards apply` es solo para staging/CI). El
+# `grafana-clickhouse-datasource` no viene instalado en la imagen oficial de
+# grafana/grafana; infra/docker-compose.yml lo instala vía
+# GF_INSTALL_PLUGINS en el propio servicio grafana (E10 no tiene todavía un
+# Dockerfile propio -- comentario de cabecera de ese archivo).
+#
+# CORRECCIÓN sobre §4.10.2: el `username` documentado ahí es `grafana`, pero
+# deploy/clickhouse/95_roles_grants.sql crea el usuario real como
+# `secisp_grafana` (con el rol secisp_ro otorgado) -- no existe ningún
+# usuario `grafana` en ClickHouse. Mismo tipo de discrepancia spec/
+# implementación que ya documenta deploy/config/policy.yaml (smtp
+# port25_policy): se resuelve a favor de lo que el SQL real crea.
+#
+# CORRECCIÓN sobre §4.10.2 (encontrada contra el plugin real, v4.9.0):
+# dialTimeout/queryTimeout van entre comillas -- pkg/plugin/settings.go de
+# grafana-clickhouse-datasource hace `jsonData["dialTimeout"].(string)` SIN
+# fallback a número (a diferencia de port/secure/tlsSkipVerify/queryTimeout,
+# que sí aceptan ambos tipos); un entero YAML sin comillas llega como número
+# JSON y esa aserción de tipo paniquea con "interface conversion: interface
+# {} is float64, not string" -- exactamente el error real de esta primera
+# instalación, en TODOS los paneles de TODOS los dashboards de ClickHouse
+# (cada query instancia el datasource, que corre LoadSettings primero).
+apiVersion: 1
+datasources:
+  # uid FIJO y legible (misma lección que el prototipo aprendió, E10 §4.10.2):
+  # los dashboards de deploy/grafana/dashboards/*.json referencian este uid
+  # literal, nunca el que Grafana asignaría solo.
+  - name: SECISP ClickHouse
+    uid: secisp-clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    isDefault: true
+    editable: false
+    jsonData:
+      host: 127.0.0.1
+      port: 9000
+      protocol: native
+      secure: false
+      username: secisp_grafana
+      defaultDatabase: isp
+      tlsSkipVerify: false
+      dialTimeout: "5"
+      queryTimeout: "15"
+      httpHeaders: []
+    secureJsonData:
+      password: ${SEC_PANEL_CH_PASSWORD}
+
+  - name: SECISP Prometheus
+    uid: secisp-prometheus
+    type: prometheus
+    access: proxy
+    editable: false
+    url: http://127.0.0.1:9090
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s

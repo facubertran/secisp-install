@@ -1,0 +1,185 @@
+# /etc/secisp/config.yaml.example — plantilla de la config común (T-036 · E12a-T05).
+#
+# El instalador (deploy/install.sh) copia este archivo a /etc/secisp/config.yaml
+# SOLO si ese archivo todavía no existe; nunca pisa una config ya editada.
+#
+# Precedencia (E00 §4.5.3, ADR-003): flag de línea de comandos > variable de
+# entorno SEC_* > este archivo > default compilado. TODA clave de acá tiene
+# default: un config.yaml vacío (o ausente) arranca el sistema igual, en modo
+# seguro (shadow en todo). Por eso este archivo sale con casi todo comentado —
+# es catálogo de lo que se puede tocar, no un mínimo necesario.
+#
+# Los cuatro roles leen este MISMO archivo (las cinco unidades de T-035 pasan
+# literalmente `--config /etc/secisp/config.yaml`, sin un path por rol): cada
+# uno valida su propia sección más las comunes, e ignora sin fallar las
+# secciones de los otros roles (E00 §4.5.3 / T-013, criterio de aceptación:
+# "secisp engine arranca con sink: y wal: presentes en el YAML").
+#
+# Clave desconocida en cualquier sección == arranque abortado, nombrando la
+# clave y la línea (E00 §4.5.3, ADR-003 fallo ruidoso). No agregar una clave
+# que no esté documentada acá o en docs/specs/E00-arquitectura-y-alcance.md
+# §4.5.3.
+#
+# Nota de estado (ver notes/gaps de T-036): al escribir este archivo, el
+# cargador núcleo (internal/config/config.go + load.go + strict.go, T-011) y el
+# catálogo de secciones (internal/config/sections.go, T-013) todavía no existen
+# en el repo — solo internal/config/collector.go (T-012, sección `collector:`)
+# los implementa hoy. El resto de las secciones de abajo transcriben los
+# nombres y defaults que E00 §4.5.3 / E12 §5.8 ya fijan; cuando T-011/T-013
+# aterricen son la fuente de verdad de cómo se parsean, no este archivo.
+
+# ── ClickHouse (E00 §4.5.3) ──────────────────────────────────────────────────
+# Lo usan los cuatro roles (collector inserta, engine consulta y escribe
+# det_events/det_cases, mitigator escribe mit_actions, watchdog consulta salud).
+# ch:
+#   addr: 127.0.0.1:9000            # SEC_CH_ADDR — host:puerto nativo
+#   database: isp                   # SEC_CH_DATABASE
+#   user: default                   # SEC_CH_USER — nunca en texto acá si se puede evitar: usar SEC_CH_USER/SEC_CH_PASSWORD por env
+#   max_conns: 4                    # SEC_CH_MAX_CONNS
+#   timeout_seconds: 20             # SEC_CH_TIMEOUT_SECONDS
+
+# ── Sink (E00 §4.5.3, dueño E02) ─────────────────────────────────────────────
+# sink:
+#   batch_rows: 100000               # SEC_SINK_BATCH_ROWS
+#   batch_interval_ms: 2000          # SEC_SINK_BATCH_INTERVAL_MS
+#   queue_batches: 16                # SEC_SINK_QUEUE_BATCHES
+#   retries: 3                       # SEC_SINK_RETRIES
+#   pause: false                     # SEC_SINK_PAUSE — true = todo al WAL (ventana de mantenimiento, P14)
+
+# ── WAL del sink (E00 §4.5.3, dueño E02) ─────────────────────────────────────
+# Requisito duro: el directorio de `dir` tiene que estar en un dispositivo
+# DISTINTO al de los datos de ClickHouse (E02 §5.7 / E12 §4.2.3). El instalador
+# y `secisp doctor --pre` lo verifican; cambiar `dir` acá sin mover el disco
+# real no resuelve nada.
+# wal:
+#   dir: /var/lib/secisp/wal                     # SEC_WAL_DIR
+#   max_bytes: 21474836480                       # SEC_WAL_MAX_BYTES (20 GiB)
+#   segment_bytes: 268435456                     # SEC_WAL_SEGMENT_BYTES (256 MiB)
+#   fsync: interval                              # SEC_WAL_FSYNC — always|interval|never
+#   fsync_interval_ms: 1000                      # SEC_WAL_FSYNC_INTERVAL_MS
+#   replay_rate_batches_per_sec: 4                # SEC_WAL_REPLAY_RATE_BATCHES_PER_SEC
+
+# ── Enrichment (E00 §4.5.3, dueño E04) ───────────────────────────────────────
+# enrich:
+#   reload_seconds: 60                                    # SEC_ENRICH_RELOAD_SECONDS
+#   bootstrap_prefixes: /etc/secisp/prefixes.yaml         # SEC_ENRICH_BOOTSTRAP_PREFIXES — bootstrap si ClickHouse no responde
+#   bootstrap_exporters: /etc/secisp/exporters.yaml       # SEC_ENRICH_BOOTSTRAP_EXPORTERS
+#   geoip_db: /var/lib/secisp/geo/asn.mmdb                # SEC_ENRICH_GEOIP_DB
+
+# ── Sampling global (E00 §4.5.3) ─────────────────────────────────────────────
+# CAMBIARLO ES DEUDA #6 (SAMPLING_FALLBACK): infla el tráfico de los routers
+# que no muestrean. Existe solo como escape hatch documentado.
+# sampling_default: 1               # SEC_SAMPLING_DEFAULT
+
+# ── Notificaciones (E00 §4.5.3) ──────────────────────────────────────────────
+# Sin defaults declarados en E00 §4.5.3: vacío hasta que se configuren.
+# NUNCA en este archivo en texto plano si se puede evitar — usar las variables
+# de entorno del .env de cada unidad (systemd EnvironmentFile=), no config.yaml,
+# para no versionar un secreto por accidente.
+# notify:
+#   telegram_token: ""              # SEC_NOTIFY_TELEGRAM_TOKEN
+#   telegram_chat_id: ""            # SEC_NOTIFY_TELEGRAM_CHAT_ID
+
+# ── Motor de detección: framework (E00b D-29, dueño E05) ────────────────────
+# Los umbrales propios de cada familia de detector (scan/smtp/ddos/anomaly) NO
+# van acá: viven en el código del detector (campos del Spec) o bajo
+# `detectors.<id>` más abajo. Acá solo el framework, para no reabrir una
+# decisión que ya tomó E05 con un parámetro por familia (prohibido, D-29).
+# detect:
+#   tick_seconds: 10                        # SEC_DETECT_TICK_SECONDS
+#   window_grace_seconds: 15                # SEC_DETECT_WINDOW_GRACE_SECONDS
+#   max_catchup_windows: 30                 # SEC_DETECT_MAX_CATCHUP_WINDOWS
+#   revisit_windows: 5                      # SEC_DETECT_REVISIT_WINDOWS
+#   revisit_min_delta_pct: 1.0              # SEC_DETECT_REVISIT_MIN_DELTA_PCT
+#   revisit_max_evals: 3                    # SEC_DETECT_REVISIT_MAX_EVALS
+#   ingest_max_stale_seconds: 120           # SEC_DETECT_INGEST_MAX_STALE_SECONDS
+#   query_timeout_seconds: 20               # SEC_DETECT_QUERY_TIMEOUT_SECONDS (T-378)
+#   max_memory_bytes: 2147483648            # SEC_DETECT_MAX_MEMORY_BYTES
+#   max_rows_read: 200000000                # SEC_DETECT_MAX_ROWS_READ
+#   max_concurrent_queries: 3               # SEC_DETECT_MAX_CONCURRENT_QUERIES
+#   max_threads_per_query: 2                # SEC_DETECT_MAX_THREADS_PER_QUERY
+#   max_events_per_run: 5000                # SEC_DETECT_MAX_EVENTS_PER_RUN
+#   breaker_fails: 3                        # SEC_DETECT_BREAKER_FAILS
+#   breaker_cooldown_seconds: 300           # SEC_DETECT_BREAKER_COOLDOWN_SECONDS
+#   warmup_seconds: 300                     # SEC_DETECT_WARMUP_SECONDS
+#   maintenance: false                      # SEC_DETECT_MAINTENANCE
+#   min_consecutive_default: 2              # SEC_DETECT_MIN_CONSECUTIVE_DEFAULT
+#   streak_max_keys: 200000                 # SEC_DETECT_STREAK_MAX_KEYS
+#   streak_gap_tolerance: 0                 # SEC_DETECT_STREAK_GAP_TOLERANCE
+#   suppress_reload_seconds: 60             # SEC_DETECT_SUPPRESS_RELOAD_SECONDS
+#   suppress_max_rules: 200                 # SEC_DETECT_SUPPRESS_MAX_RULES
+#   suppress_max_ttl_days: 365              # SEC_DETECT_SUPPRESS_MAX_TTL_DAYS
+#   max_shed_ratio: 0.2                     # SEC_DETECT_MAX_SHED_RATIO
+#   baseline_veto_enabled: true             # SEC_DETECT_BASELINE_VETO_ENABLED
+#   hybrid_enabled: true                    # SEC_DETECT_HYBRID_ENABLED
+#   case_idle_seconds: 900                  # SEC_DETECT_CASE_IDLE_SECONDS
+#   case_sync_seconds: 30                   # SEC_DETECT_CASE_SYNC_SECONDS
+#   case_reopen_seconds: 1800               # SEC_DETECT_CASE_REOPEN_SECONDS
+#   case_stuck_seconds: 600                 # SEC_DETECT_CASE_STUCK_SECONDS
+#   max_live_cases: 50000                   # SEC_DETECT_MAX_LIVE_CASES
+#   engine_instance: ""                     # SEC_DETECT_ENGINE_INSTANCE — default: hostname
+
+# Override en producción por detector, sin recompilar (E00 §4.5.3, E05 §4.12):
+# equivalente a `SEC_DETECT_MODE_<DETECTOR_ID>` pero expresado en YAML. El
+# default de TODO detector es `shadow` (arranque en modo seguro, ADR-011); no
+# hace falta declarar acá los que se dejan en el default.
+# detectors:
+#   scan.horizontal:
+#     mode: shadow
+
+# ── Mitigación (E00 §4.5.3, dueño E11) ───────────────────────────────────────
+# Kill switch global apagado por default: nada se bloquea hasta que se decide
+# expresamente lo contrario (E12 §4.13, D8: mitigate no se habilita antes de
+# los 30 días). El resto del contrato de E11 (routers.yaml, cooldowns,
+# circuit breaker granular, render de reglas...) tiene sus propias tasks en
+# otras olas y no se transcribe acá para no inventar un default que E11 no fijó
+# todavía en este repo.
+# mit:
+#   enabled: false                              # SEC_MIT_ENABLED
+#   routers_path: /etc/secisp/routers.yaml      # SEC_MIT_ROUTERS_PATH
+#   default_timeout_seconds: 1800               # SEC_MIT_DEFAULT_TIMEOUT_SECONDS
+#   max_timeout_seconds: 86400                  # SEC_MIT_MAX_TIMEOUT_SECONDS (tope duro, O6)
+#   max_actions_per_tick: 100                   # SEC_MIT_MAX_ACTIONS_PER_TICK
+#   max_customers_blocked_per_hour: 20          # SEC_MIT_MAX_CUSTOMERS_BLOCKED_PER_HOUR (circuit breaker)
+
+# ── Watchdog / operación (E12 §5.8) ──────────────────────────────────────────
+# Ver también deploy/etc/secisp/watchdog.yaml.example (mismas claves, extracto
+# de referencia). SEC_WATCHDOG_DEADMAN_URL vacía es FAIL en `doctor --pre` (D4):
+# no queda comentada por default para que quede visible que hay que llenarla.
+# watchdog:
+#   interval_seconds: 30                        # SEC_WATCHDOG_INTERVAL_SECONDS
+#   fail_streak: 3                              # SEC_WATCHDOG_FAIL_STREAK
+#   ch_timeout_seconds: 8                       # SEC_WATCHDOG_CH_TIMEOUT_SECONDS
+#   flows_stale_seconds: 180                    # SEC_WATCHDOG_FLOWS_STALE_SECONDS
+#   agg_stale_seconds: 300                      # SEC_WATCHDOG_AGG_STALE_SECONDS
+#   exporter_stale_seconds: 600                 # SEC_WATCHDOG_EXPORTER_STALE_SECONDS
+#   disk_warn_pct: 85                           # SEC_WATCHDOG_DISK_WARN_PCT
+#   disk_crit_pct: 93                           # SEC_WATCHDOG_DISK_CRIT_PCT
+#   collector_debug_url: http://127.0.0.1:9101  # SEC_WATCHDOG_COLLECTOR_DEBUG_URL
+#   alertmanager_url: http://127.0.0.1:9093     # SEC_WATCHDOG_ALERTMANAGER_URL
+#   deadman_url: ""                             # SEC_WATCHDOG_DEADMAN_URL — vacío = FAIL en doctor --pre (D4)
+#   deadman_interval_seconds: 60                # SEC_WATCHDOG_DEADMAN_INTERVAL_SECONDS
+#   fallback_enabled: true                      # SEC_WATCHDOG_FALLBACK_ENABLED
+#   fallback_webhook: ""                        # SEC_WATCHDOG_FALLBACK_WEBHOOK — vacío por decisión (P12), no por olvido
+#   instance_name: ""                           # SEC_WATCHDOG_INSTANCE_NAME — default: hostname
+#   expected_modes_path: /etc/secisp/expected_modes.yaml   # SEC_WATCHDOG_EXPECTED_MODES_PATH
+
+# ── Operación (E12 §5.8) ─────────────────────────────────────────────────────
+# ops:
+#   actor: ""                                     # SEC_OPS_ACTOR — fallback: SUDO_USER > USER > 'unknown'
+#   backup_dir: /var/backups/secisp               # SEC_OPS_BACKUP_DIR
+#   backup_keep: 8                                # SEC_OPS_BACKUP_KEEP
+#   backup_age_recipient: ""                      # SEC_OPS_BACKUP_AGE_RECIPIENT — clave pública age para routers.yaml
+#   phase: observation                            # SEC_OPS_PHASE — observation|alert|dry_run|production
+#   runbook_base_url: https://git.terenet/security-isp/docs/runbooks   # SEC_OPS_RUNBOOK_BASE_URL
+#   maint_window_seconds: 120                     # SEC_OPS_MAINT_WINDOW_SECONDS
+
+# ── loadgen / evalset — SOLO en laboratorio y CI (E12 §5.8) ─────────────────
+# No tiene sentido en un despliegue de cliente: se deja comentado a propósito.
+# loadgen:
+#   target: 127.0.0.1:2055                        # SEC_LOADGEN_TARGET
+# evalset:
+#   tol_recall: 0.02                              # SEC_EVALSET_TOL_RECALL
+#   tol_precision: 0.02                           # SEC_EVALSET_TOL_PRECISION
+#   tol_mttd_factor: 1.20                         # SEC_EVALSET_TOL_MTTD_FACTOR
+#   pushgateway_url: ""                           # SEC_EVALSET_PUSHGATEWAY_URL — vacío = `evalset check` no empuja (T-226)

@@ -1,0 +1,53 @@
+# /etc/secisp/collector.yaml.example — extracto de referencia de la sección
+# `collector:` (T-036 · E12a-T05).
+#
+# E12 §4.3 lista `collector.yaml` en /etc/secisp como "override por rol", pero
+# las cinco unidades systemd de T-035 pasan `--config /etc/secisp/config.yaml`
+# literal para TODOS los roles -- no hay un `SEC_CONFIG_PATH` por rol en las
+# unidades ya escritas, y ningún cargador de este repo (T-011/T-012/T-013) lee
+# un segundo archivo aparte de config.yaml. Mientras ese mecanismo no exista
+# (ver gaps de T-036), este archivo es una plantilla de copiar/pegar: el
+# contenido de más abajo es exactamente la sección `collector:` que va dentro
+# de /etc/secisp/config.yaml, aislada acá para que quien solo administra el
+# collector no tenga que leer el archivo común completo.
+#
+# El instalador SÍ copia este archivo a /etc/secisp/collector.yaml si ese
+# destino no existe (paridad con el resto de los *.yaml.example), pero eso no
+# alcanza para que el collector lo lea solo: hay que pegar la sección adentro
+# de config.yaml.
+#
+# 18 variables SEC_COLLECTOR_* nuevas de E01 §5.4 (T-012, internal/config/
+# collector.go). No incluye las de E00 §4.5.3 que el collector consume tal
+# cual (SEC_COLLECTOR_NETFLOW_ADDR/_IPFIX_ADDR/_SFLOW_ADDR/_WORKERS/
+# _SOCKET_BUFFER_BYTES/_TEMPLATE_TTL_SECONDS, SEC_SAMPLING_DEFAULT,
+# SEC_METRICS_ADDR, SEC_ENRICH_*): esas viven en config.yaml.example, sección
+# común, no se redeclaran acá (docs/plan/secuencia-de-desarrollo.md §7 bis).
+#
+# Clave desconocida bajo `collector:` == arranque abortado nombrando la clave
+# y la línea (E00 §4.5.3 ADR-003). El fixture que ejercita justo eso es
+# internal/config/testdata/config_unknown_key.yaml (T-012).
+
+collector:
+  sockets_per_listener: 6            # SEC_COLLECTOR_SOCKETS_PER_LISTENER — default: SEC_COLLECTOR_WORKERS
+  recv_batch: 64                     # SEC_COLLECTOR_RECV_BATCH
+  read_buffer_bytes: 9216            # SEC_COLLECTOR_READ_BUFFER_BYTES
+  template_cache_path: /var/lib/secisp/templates.json   # SEC_COLLECTOR_TEMPLATE_CACHE_PATH — vacío desactiva el snapshot
+  template_snapshot_seconds: 60      # SEC_COLLECTOR_TEMPLATE_SNAPSHOT_SECONDS
+  template_max_per_exporter: 256     # SEC_COLLECTOR_TEMPLATE_MAX_PER_EXPORTER
+  pending_datagrams: 8               # SEC_COLLECTOR_PENDING_DATAGRAMS
+  pending_max_bytes: 33554432        # SEC_COLLECTOR_PENDING_MAX_BYTES
+  pending_ttl_seconds: 60            # SEC_COLLECTOR_PENDING_TTL_SECONDS
+  max_clock_skew_seconds: 300        # SEC_COLLECTOR_MAX_CLOCK_SKEW_SECONDS
+  max_flow_age_seconds: 3600         # SEC_COLLECTOR_MAX_FLOW_AGE_SECONDS
+  seq_mode: auto                     # SEC_COLLECTOR_SEQ_MODE — auto|datagram|record
+  sflow_max_samples: 256             # SEC_COLLECTOR_SFLOW_MAX_SAMPLES
+  max_records_per_set: 2048          # SEC_COLLECTOR_MAX_RECORDS_PER_SET
+  stats_interval_seconds: 10         # SEC_COLLECTOR_STATS_INTERVAL_SECONDS
+  accept_unknown_exporters: true     # SEC_COLLECTOR_ACCEPT_UNKNOWN_EXPORTERS
+  debug_capture: false               # SEC_COLLECTOR_DEBUG_CAPTURE — /debug/pcap; deja apagado en producción
+  chunk_flush_ms: 500                # SEC_COLLECTOR_CHUNK_FLUSH_MS (reemplaza a SLAB_FLUSH_MS, D-14)
+
+# Todos los valores de arriba son literalmente el default compilado
+# (DefaultCollectorConfig, internal/config/collector.go): este archivo, copiado
+# tal cual, no cambia ningún comportamiento. Editar solo lo que haga falta y
+# borrar el resto no rompe nada porque cada clave tiene su propio default.

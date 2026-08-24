@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<!--
+  T-034 (E12a-T02), E12 §4.1: "Prometheus alcanza ... y ninguna superficie de
+  métricas queda expuesta fuera de loopback"; el criterio de aceptación exige
+  un target del job `clickhouse` en :9363. No es uno de los entregables listados
+  (T-034 solo nombra system-logs-retention.xml), pero sin habilitar el endpoint
+  nativo de Prometheus de ClickHouse ese target no existe y el criterio no se
+  puede verificar. Se agrega como archivo suelto propio dentro de config.d,
+  mismo motivo que el de arriba (no tapar docker_related_config.xml).
+-->
+<clickhouse>
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+    </prometheus>
+</clickhouse>

@@ -1,0 +1,49 @@
+# deploy/routeros/secisp.rsc.tmpl -- T-294 (E11-T22, ola 8), E11 §4.16.
+#
+# Referencia ILUSTRATIVA del único paso manual por router: el salto a la
+# cadena secisp-out. `secisp mitigator render-rules` NO genera este bloque
+# -- lo genera el bloque "GESTIONADO POR SECISP" propio, que asume que este
+# salto YA existe. Decidir DÓNDE en `forward` se inserta el salto es
+# exactamente la clase de decisión que E11 no automatiza (§4.16: "el
+# mitigador no crea el salto"), así que este archivo es una plantilla para
+# copiar y ajustar a mano, no un artefacto que ningún comando aplique.
+#
+# ── Por qué en `forward` y en ningún otro lado ──────────────────────────
+#
+# forward se evalúa ANTES del srcnat de postrouting: con P6 (sin CGNAT,
+# exportación pre-NAT) la src_ip que el motor publica para un flujo IPv4
+# saliente es la IP PRIVADA del cliente antes de natear, y forward es el
+# único punto del pipeline de RouterOS donde el paquete todavía la lleva.
+# En IPv6 no hay NAT y la pregunta no existe -- la src es la GUA pública
+# del cliente en todos lados -- pero el salto va en forward igual, por
+# consistencia con IPv4 y porque ahí es donde vive secisp-out.
+#
+# secisp NUNCA modifica esta regla ni ninguna otra fuera de su propia
+# cadena (secisp-out): place-before queda en vos, el operador.
+
+/ip firewall filter
+add chain=forward action=jump jump-target=secisp-out comment="secisp:jump" place-before=0
+/ipv6 firewall filter
+add chain=forward action=jump jump-target=secisp-out comment="secisp:jump" place-before=0
+
+# ── Opcional: cola para la acción rate_limit (D8, dimensionala vos) ────────
+#
+# El mitigador marca los paquetes de un cliente en rate_limit con
+# src-address-list=secisp_ratelimit_src (D8: NO calcula ningún max-limit por
+# su cuenta -- decidir cuánto ancho de banda dejarle a un cliente marcado es
+# una decisión de negocio del ISP, no del detector). Sin este bloque, la
+# lista se llena igual pero ningún paquete se limita de verdad.
+
+/ip firewall mangle
+add chain=forward action=mark-packet new-packet-mark=secisp-limited passthrough=no \
+    src-address-list=secisp_ratelimit_src comment="secisp:mangle:ratelimit"
+/queue tree
+add name=secisp-limited parent=global packet-mark=secisp-limited max-limit=10M \
+    comment="secisp:queue:ratelimit"
+
+# ── Después de este paso manual, corré: ─────────────────────────────────
+#
+#   secisp mitigator render-rules --router <nombre-de-routers.yaml>
+#
+# y aplicá el .rsc que produce -- ESE archivo sí es gestionado por secisp
+# de punta a punta (regenerarlo y reaplicarlo es seguro e idempotente).

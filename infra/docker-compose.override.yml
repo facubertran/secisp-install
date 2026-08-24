@@ -1,0 +1,18 @@
+# infra/docker-compose.override.yml -- NO VERSIONADO (.gitignore).
+#
+# Docker Compose lo mergea automáticamente sobre docker-compose.yml cuando
+# está presente en el mismo directorio, sin necesidad de -f. Acá vive la
+# desviación deliberada de ESTE despliegue puntual (no un default del repo):
+# Grafana expuesto más allá de loopback, con HTTPS autofirmado, porque el
+# operador pidió acceso desde internet para esta prueba (sesión del
+# 2026-08-19). Ver infra/docker-compose.yml para el resto, seguro por
+# default.
+services:
+  grafana:
+    environment:
+      GF_SERVER_HTTP_ADDR: ""
+      GF_SERVER_PROTOCOL: "https"
+      GF_SERVER_CERT_FILE: "/etc/grafana/tls/grafana.crt"
+      GF_SERVER_CERT_KEY: "/etc/grafana/tls/grafana.key"
+    volumes:
+      - ${GRAFANA_TLS_DIR:-./tls}:/etc/grafana/tls:ro

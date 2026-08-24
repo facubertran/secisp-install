@@ -1,0 +1,186 @@
+# infra/prometheus/rules/ingest.yml
+#
+# T-163 (E12a-T19) -- E12 §4.5.2, §4.6 · E00b D-20 · E00b D-37 · E12 §3 D13.
+#
+# Alertas de fallo silencioso de la cadena de ingesta: UDP -> decode -> chunk
+# -> sink -> WAL -> ClickHouse. Cada regla tapa una forma concreta en la que
+# el sistema deja de detectar sin caerse (E12 §4.5.2). El listado maestro de
+# métricas alertables vive en docs/specs/E00-arquitectura-y-alcance.md §4.5.2:
+# "ninguna épica puede alertar sobre una métrica que no esté ahí" —
+# TestRulesReferenceDeclaredMetrics (E12 §4.6.1) es lo que lo hace cumplir.
+#
+# code: SEC-OPS-002 en las diez reglas de este archivo, tal como fija el
+# ejemplo literal de E12 §4.6 para SecIngestStopped / SecExporterMute /
+# SecWalReplayerDown / SecWalReplayerDead: es el código de "ingesta sin datos
+# frescos" del catálogo de E00 §4.5.4 y cubre, por extensión, cualquier causa
+# raíz de esa misma familia de síntoma (parada completa, exportador mudo,
+# pausa olvidada, pérdida parcial, drops de kernel, WAL sin drenar, ClickHouse
+# caído, merges atrasados). No hay en E00 §4.5.4 un código SEC-OPS-* más
+# específico para ninguna de las seis reglas que no vienen con code ya fijado
+# en el ejemplo de la spec.
+groups:
+  - name: secisp-ingest
+    interval: 30s
+    rules:
+      - alert: SecIngestStopped
+        expr: sum(rate(sec_sink_rows_inserted_total[5m])) == 0
+        for: 3m
+        labels:
+          severity: critical
+          component: sink
+          code: SEC-OPS-002
+        annotations:
+          summary: "Ingesta detenida: 0 filas insertadas en 5 minutos"
+          description: >-
+            No entró ninguna fila a isp.flows_raw en los últimos 5 minutos.
+            La detección está ciega. Causas típicas, en orden de probabilidad:
+            un router dejó de exportar, ClickHouse no acepta inserts, o
+            SEC_SINK_PAUSE quedó en true.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-01-ingesta-detenida.md"
+
+      - alert: SecExporterMute
+        expr: time() - sec_collector_last_seen_timestamp_seconds > 600
+        for: 5m
+        labels:
+          severity: critical
+          component: collector
+          code: SEC-OPS-002
+        annotations:
+          summary: "El exportador {{ $labels.exporter_id }} no manda flujos hace {{ $value | humanizeDuration }}"
+          description: >-
+            Este es el fallo que el prototipo NO detectaba: los demás routers
+            siguen exportando, la ingesta global se ve sana, y una porción de la
+            red queda invisible por semanas.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-02-exportador-mudo.md"
+
+      - alert: SecIngestLossHigh
+        expr: |
+          sum(rate(sec_sink_rows_inserted_total[10m]))
+            / sum(rate(sec_collector_flows_decoded_total[10m])) < 0.995
+        for: 10m
+        labels:
+          severity: warning
+          component: sink
+          code: SEC-OPS-002
+        annotations:
+          summary: "O7 degradado: solo el {{ $value | humanizePercentage }} de los flujos decodificados llega a ClickHouse"
+          description: >-
+            O7 exige inserted/decoded >= 99,5 %. El collector sigue decodificando
+            con normalidad pero una fracción se pierde antes de confirmarse en
+            ClickHouse: rechazos de esquema, batches poison del WAL, o shedding
+            de presión (sec_sink_shed_records_total) descartando de más.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-01-ingesta-detenida.md"
+
+      - alert: SecUdpDrops
+        expr: rate(sec_collector_packets_dropped_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: collector
+          code: SEC-OPS-002
+        annotations:
+          summary: "El collector descarta datagramas ({{ $labels.reason }}): {{ $value | humanize }}/s"
+          description: >-
+            sec_collector_packets_dropped_total sube: el decodificador rechaza
+            datagramas por versión desconocida, malformados, exportador
+            desconocido rechazado o tamaño excesivo — nunca por presión del
+            sink (E00b D-14). Cada datagrama descartado es tráfico que nunca
+            llega a enriquecerse ni a detectarse.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-01-ingesta-detenida.md"
+
+      - alert: SecSinkPausedForgotten
+        expr: sec_sink_paused == 1
+        for: 10m
+        labels:
+          severity: critical
+          component: sink
+          code: SEC-OPS-002
+        annotations:
+          summary: "SEC_SINK_PAUSE sigue activo hace más de 10 minutos"
+          description: >-
+            El sink manda todo al WAL y no inserta en ClickHouse. Es la primera
+            causa a descartar en RB-01: alguien puso SEC_SINK_PAUSE=true para
+            mantenimiento (upgrade de esquema, D11) y se olvidó de sacarlo. El
+            WAL absorbe mientras tanto, pero no indefinidamente — ver
+            SecWalNearCapacity.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-01-ingesta-detenida.md"
+
+      - alert: SecClickHouseDown
+        expr: sec_sink_clickhouse_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: sink
+          code: SEC-OPS-002
+        annotations:
+          summary: "ClickHouse no acepta conexiones"
+          description: >-
+            El último probe SELECT 1 del sink falló. Mientras dure, el WAL
+            absorbe todo lo que entra (SecWalNearCapacity marca cuánto tiempo
+            queda) y SecWalReplayerDead queda deliberadamente muda: con
+            ClickHouse caído, el WAL sin drenar es el comportamiento correcto,
+            no una falla del replayer.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-04-clickhouse-no-arranca-oom.md"
+
+      - alert: SecWalNearCapacity
+        expr: sec_wal_bytes / sec_wal_max_bytes > 0.7
+        for: 5m
+        labels:
+          severity: warning
+          component: sink
+          code: SEC-OPS-002
+        annotations:
+          summary: "El WAL está al {{ $value | humanizePercentage }} de su capacidad"
+          description: >-
+            O8 exige tolerar 60 minutos de ClickHouse caído sin perder datos.
+            La expresión es un ratio contra sec_wal_max_bytes (D-38), nunca un
+            número de bytes hardcodeado: hardcodear el tope es exactamente
+            cómo una regla se desincroniza de SEC_WAL_MAX_BYTES sin que nadie
+            lo note.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-09-wal-cerca-de-capacidad.md"
+
+      # E00b D-20: el replayer del WAL no puede morirse en silencio.
+      # Dos reglas complementarias: la señal directa y la señal por consecuencia.
+      - alert: SecWalReplayerDown
+        expr: sec_wal_replayer_up == 0
+        for: 2m
+        labels: {severity: critical, component: sink, code: SEC-OPS-002}
+        annotations:
+          summary: "El replayer del WAL no está corriendo"
+          description: >-
+            La goroutine de replay de E02 §4.7 no está viva. El WAL deja de
+            drenar y el sink escribe encima hasta que el descarte por capacidad
+            empieza a borrar segmentos: pérdida de datos silenciosa.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-09-wal-cerca-de-capacidad.md#replayer-muerto"
+
+      - alert: SecWalReplayerDead
+        expr: |
+          sec_wal_bytes > 0
+            and increase(sec_wal_replayed_batches_total[5m]) == 0
+            and sec_sink_clickhouse_up == 1
+        for: 5m
+        labels: {severity: critical, component: sink, code: SEC-OPS-002}
+        annotations:
+          summary: "El WAL tiene {{ $value | humanize1024 }}B y no drena hace 5 minutos"
+          description: >-
+            Hay datos en el WAL, ClickHouse acepta conexiones, y el contador de
+            batches reproducidos no se movió. La guarda sec_sink_clickhouse_up==1
+            es deliberada: durante una caída de ClickHouse el WAL DEBE crecer sin
+            drenar, y sin esa condición esta alerta dispararía en el único momento
+            en que el comportamiento es correcto.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-09-wal-cerca-de-capacidad.md#replayer-muerto"
+
+      - alert: SecTooManyParts
+        expr: sec_sink_parts_active > 200
+        for: 10m
+        labels:
+          severity: warning
+          component: sink
+          code: SEC-OPS-002
+        annotations:
+          summary: "{{ $labels.table }} acumula {{ $value }} parts activas: los merges están atrasados"
+          description: >-
+            ClickHouse rechaza inserts con TOO_MANY_PARTS antes de llegar al
+            límite duro. Es la causa #2 de RB-01: esperar a que los merges
+            avancen, nunca bajar SEC_SINK_BATCH_ROWS (empeora el problema).
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-01-ingesta-detenida.md"

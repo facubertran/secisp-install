@@ -1,0 +1,14 @@
+# Dispara secisp-backup-verify.service una vez por semana (T-350 ·
+# E12b-T27, E12 D10: "un job semanal restaura el backup más reciente en un
+# ClickHouse efímero y verifica conteos; si falla, SEC-OPS-009"). Mismo
+# patrón que secisp-doctor.timer (T-035).
+[Unit]
+Description=Corre `secisp backup verify` semanalmente
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+Unit=secisp-backup-verify.service
+
+[Install]
+WantedBy=timers.target

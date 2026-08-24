@@ -1,0 +1,204 @@
+# infra/prometheus/rules/baseline.yml
+#
+# T-340 (E09-T18, ola 9) -- E09 §5.9 · E09 §5.10 · E00 §4.5.2 · E00b D-37.
+#
+# Las cinco alertas que el criterio de aceptación de T-340 exige
+# literalmente (coverage/staleness/quarantined/residuals-truncated/veto),
+# más una sexta (SecBaselineCalibrationClamped) para que el otro criterio
+# de la task -- "los seis códigos SEC-DET-011..016 se emiten" -- quede
+# completo: SEC-DET-011/012/015 los emite internal/detect/anomaly/health.go
+# (T-339) por log estructurado rate-limitado (CheckCoverage/
+# CheckStaleProfiles/CheckDictionaries, obs.RateLimiter) -- SEC-DET-015 en
+# particular NO tiene regla acá, es puramente un chequeo de
+# system.dictionaries que health.go ya resuelve -- y SEC-DET-013/014/016
+# los lleva el label `code` de una regla de este archivo. Contra las
+# diecinueve métricas `sec_detect_baseline_*` que internal/detect/anomaly/
+# metrics.go declara (§5.9 dice "18" en la prosa, el bloque de código de
+# esa misma sección enumera diecinueve -- mismo desvío que E08/ddos ya
+# documentó, el bloque manda). El chequeo GENÉRICO de que TODA regla de
+# TODO rules/*.yml referencia una métrica del listado maestro de E00 §4.5.2
+# es entregable de una task posterior de ola 11 (E12 §4.6.1) -- este
+# archivo se valida solo contra su propio conjunto declarado, mismo
+# criterio que infra/prometheus/rules/mitigate.yml ya aplica y que
+# test/rules/baseline_rules_test.go hace acá.
+#
+# SecBaselineCoverageLow tiene fuente real HOY (metrics.go la wirea contra
+# isp.v_bl_coverage). Las demás referencian métricas que metrics.go declara
+# con Source=nil o sin wiring de Engine todavía (staleness_seconds,
+# quarantined_total, calibration_clamped_total, residual_truncated_total,
+# veto_total): quedan escritas igual, mismo criterio que host.yml ya
+# aplicó para SecBackupVerifyFailed (T-318) -- sin la regla, el día que
+# J2/J5/J6/T-347 empiecen a incrementarlas, alguien tendría que acordarse
+# de escribirla acá también.
+#
+# runbook_url (T-412, E12b-T30, ola 11): las seis alertas de este archivo
+# no llevaban runbook_url -- E12 D13 exige 100% de resolución
+# (test/rules/runbook_anchors_test.go). Las seis apuntan al mismo archivo,
+# RB-29-baseline-degradado.md (sin ancla: un único runbook cubre las seis
+# causas, no seis documentos separados para una sola épica de J2/J5/J6).
+#
+# T-418 (E12a-T23, ola 11): SecBaselineStale tenía severity: error, un
+# tercer valor fuera de {warning, critical} que ningún comentario de este
+# archivo documentaba como decisión -- TestEveryRuleHasSeverity (E12
+# §4.6.1) lo habría atrapado el día que existiera. Corregido a warning:
+# un job stale degrada la calidad del perfil (quality×0.5,
+# anomaly.EffectiveQuality) sin apagar la detección, la misma severidad
+# que el resto de las condiciones "degradado pero no roto" de este
+# archivo.
+#
+# SecBaselineVetoMasking es la Trampa explícita de T-340: "si vetoed crece
+# sin que bajen los casos revertidos, el veto está tapando algo". No hay
+# una métrica "casos revertidos" dedicada en E09 -- el proxy más cercano
+# ya declarado en el listado maestro (E00 §4.5.2, bloque "E05..E09 motor
+# de detección") es sec_detect_case_transitions_total{from,to}, contando
+# las transiciones HACIA dismissed (un operador o una regla los declaró
+# falso positivo, E05 §4.x) como "reversión". La regla compara el ritmo de
+# veto contra el ritmo de dismissed de la MISMA ventana anterior: si el
+# veto sube y dismissed NO baja (sigue igual o sube), el veto no está
+# reemplazando al operador, está sumándose encima de algo que ya seguía
+# pasando -- justo la lectura operativa que la Trampa describe. Sin
+# `code`: SEC-DET-014 es específicamente "calibración fuera de rango" (ver
+# el catálogo, internal/obs/codes.go) -- forzarlo acá sería una lectura
+# artificiosa, mismo criterio que SecTransitFlows/SecFlagsCoverageLost en
+# detect.yml ya aplican para una condición sin código dedicado.
+groups:
+  - name: secisp-baseline
+    interval: 30s
+    rules:
+      - alert: SecBaselineCoverageLow
+        expr: sec_detect_baseline_coverage_ratio > 0 and sec_detect_baseline_coverage_ratio < 0.3
+        for: 10m
+        labels:
+          severity: warning
+          component: baseline
+          code: SEC-DET-011
+        annotations:
+          summary: "Cobertura de baseline por debajo del mínimo en {{ $labels.metric }}/{{ $labels.level_used }}"
+          description: >-
+            sec_detect_baseline_coverage_ratio{metric,level_used} < 0.3
+            sostenido 10 minutos, con al menos una entidad evaluable
+            (E09 §4.9: coverage_ratio=0 con cero evaluables es "día 0-1",
+            no una alerta -- por eso el filtro `> 0` en el expr, mismo
+            criterio que anomaly.CheckCoverage aplica en Go,
+            internal/detect/anomaly/health.go, T-339). CheckCoverage ya
+            emite SEC-DET-011 cada 10 minutos por su cuenta
+            (obs.RateLimiter); esta regla es la señal de panel/pager
+            sobre la MISMA condición, no una segunda fuente.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-29-baseline-degradado.md"
+
+      - alert: SecBaselineStale
+        expr: sec_detect_baseline_staleness_seconds > 172800
+        for: 5m
+        labels:
+          severity: warning
+          component: baseline
+          code: SEC-DET-012
+        annotations:
+          summary: "Job de baseline {{ $labels.job }} stale (más de 2 días sin correr con éxito)"
+          description: >-
+            sec_detect_baseline_staleness_seconds{job} superó
+            SEC_DETECT_BASELINE_MAX_STALENESS_SECONDS (default 172800s =
+            2 días, E09 §5.8/§4.9). Un perfil servido stale se degrada a
+            quality×0.5 (anomaly.EffectiveQuality, T-339) en vez de
+            apagarse -- esta alerta es la señal de que ALGO dejó de
+            correr, no que el detector se calló. sec_detect_baseline_
+            staleness_seconds{job} queda declarada sin Source hasta que el
+            wiring de Engine exista (metrics.go, T-340): la regla se
+            escribe igual, mismo criterio que el resto de este archivo.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-29-baseline-degradado.md"
+
+      - alert: SecBaselineQuarantinedGrowing
+        expr: increase(sec_detect_baseline_quarantined_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: baseline
+          code: SEC-DET-013
+        annotations:
+          summary: "Entidades entrando a quarantined (E09 §4.10)"
+          description: >-
+            sec_detect_baseline_quarantined_total creció en la última
+            hora: una o más entidades superaron el clamp de deriva del
+            nivel (§4.6.1, R=SEC_DETECT_BASELINE_MAX_LEVEL_RATIO_PER_DAY)
+            y quedaron sin evaluación propia hasta que 2 días sin volver a
+            exceder R las devuelva a warmup (§4.9). Es la contraparte
+            operativa de D10: "un ataque lento que se disfraza de deriva
+            normal se convierte en esto, no en silencio" -- crecimiento
+            sostenido en varias entidades a la vez es la señal de un
+            patrón, no de una entidad aislada.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-29-baseline-degradado.md"
+
+      - alert: SecBaselineResidualsTruncated
+        expr: increase(sec_detect_baseline_residual_truncated_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: baseline
+          code: SEC-DET-016
+        annotations:
+          summary: "J5 truncó bl_residuals (SEC_DETECT_BASELINE_RESIDUAL_MAX_ENTITIES)"
+          description: >-
+            sec_detect_baseline_residual_truncated_total creció: J5
+            (bl_residuals.sql, cada 5 minutos) devolvió exactamente
+            SEC_DETECT_BASELINE_RESIDUAL_MAX_ENTITIES filas y recortó el
+            resto (E09 §4.8.4, D11) -- una o más entidades activas se
+            quedaron sin z esa ventana. Si esto se sostiene, el piso de
+            inclusión (RESIDUAL_MIN_PPS/RESIDUAL_MIN_UNIQ_DST) o el tope
+            mismo necesitan revisarse, no solo esta corrida puntual.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-29-baseline-degradado.md"
+
+      - alert: SecBaselineCalibrationClamped
+        expr: increase(sec_detect_baseline_calibration_clamped_total[1d]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: baseline
+          code: SEC-DET-014
+        annotations:
+          summary: "J6 recortó la calibración de {{ $labels.metric }} ({{ $labels.what }})"
+          description: >-
+            sec_detect_baseline_calibration_clamped_total{metric,what} subió:
+            J6 (bl.calibrate, T-337/338) midió un offset_log, sigma_scale o
+            k_sigma que se movió más del paso diario permitido y aplicó el
+            paso máximo en la dirección medida en vez del valor crudo
+            (E09 §4.6.6/§4.6.7, SEC-DET-014: "calibración fuera de rango,
+            k recortado o offset_log excesivo"). Un recorte aislado es la
+            guarda funcionando; varios seguidos en la MISMA métrica son la
+            señal real -- la trampa de T-337 es textual: "la lectura
+            correcta NO es subirle el tope, es que el par de estadísticos
+            dejó de ser comparable". Sin Source hasta que J6 (o su wiring
+            de Engine) incremente el contador -- ver metrics.go.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-29-baseline-degradado.md"
+
+      - alert: SecBaselineVetoMasking
+        expr: >-
+          rate(sec_detect_baseline_veto_total{result="vetoed"}[1h]) > 0
+          and
+          rate(sec_detect_case_transitions_total{to="dismissed"}[1h])
+            >= rate(sec_detect_case_transitions_total{to="dismissed"}[1h] offset 1h)
+        for: 30m
+        labels:
+          severity: warning
+          component: baseline
+        annotations:
+          summary: "El veto del baseline crece sin que bajen los casos revertidos"
+          description: >-
+            Trampa literal de T-340: sec_detect_baseline_veto_total{result=
+            "vetoed"} tiene ritmo positivo Y el ritmo de casos que un
+            operador/regla marcó dismissed (sec_detect_case_transitions_total
+            {to="dismissed"}, el proxy más cercano a "revertido" que el
+            listado maestro ya declara) NO bajó respecto de la hora
+            anterior. Si el veto reemplazara reversión manual, dismissed
+            debería CAER a medida que vetoed sube -- que no caiga es la
+            lectura de "el veto está tapando algo real", no filtrando
+            ruido (E09 §4.12). Sin `code`: ningún SEC-DET-0NN cerrado
+            describe específicamente "el veto puede estar equivocado" sin
+            forzar una lectura artificiosa de otro código (SEC-DET-014 es
+            calibración, no esto -- ver SecBaselineCalibrationClamped
+            arriba) -- mismo criterio que SecTransitFlows/
+            SecFlagsCoverageLost en detect.yml, que también documentan la
+            ausencia en vez de inventar uno. sec_detect_baseline_veto_total
+            queda declarada sin Source hasta T-347 (el veto en sí, no
+            construido en esta ola): la regla se escribe igual, mismo
+            criterio que SecBaselineStale arriba.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-29-baseline-degradado.md"

@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<!--
+  T-034 (E12a-T02), E12 §1.1, §4.2.3.
+
+  Tope de las tablas system.*_log de ClickHouse. Lección heredada tal cual del
+  prototipo (E12 §1.1: "El anchor de rotación de logs de Docker..."; E02 §1.5:
+  "El cap de las tablas system.*_log ... es una lección cara y bien documentada
+  (text_log=17 GiB, trace_log=11 GiB) y E12 la hereda igual"): sin este archivo
+  esas tablas crecen sin tope y son la causa raíz documentada de los discos al
+  100%.
+
+  Se monta como archivo SUELTO dentro de config.d (criterio de aceptación de
+  T-034 y trampa de E12 §1.1): montar la carpeta entera tapa el
+  docker_related_config.xml que la propia imagen deja ahí, y ClickHouse queda
+  escuchando solo en localhost.
+
+  Los valores de TTL no están fijados en días exactos por ninguna spec (E12
+  §4.2.3 solo da el presupuesto de disco total del bloque system.*_log: 5/10/
+  20 GB según escenario, "con el TTL de §4.4", pero §4.4 no fija un número de
+  días). query_log/query_thread_log usan el "default 30 d" que E10 §8 cita para
+  query_log; part_log queda igual. Los de mayor volumen por fila (trace_log,
+  text_log, metric_log, asynchronous_metric_log) se acotan a 7 días. Ver gaps
+  de T-034: si el ISP necesita otro número, se ajusta acá sin migrar nada más.
+-->
+<clickhouse>
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <ttl>event_date + INTERVAL 30 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </query_log>
+    <query_thread_log>
+        <database>system</database>
+        <table>query_thread_log</table>
+        <ttl>event_date + INTERVAL 30 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </query_thread_log>
+    <part_log>
+        <database>system</database>
+        <table>part_log</table>
+        <ttl>event_date + INTERVAL 30 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </part_log>
+    <trace_log>
+        <database>system</database>
+        <table>trace_log</table>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </trace_log>
+    <text_log>
+        <database>system</database>
+        <table>text_log</table>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </text_log>
+    <metric_log>
+        <database>system</database>
+        <table>metric_log</table>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </metric_log>
+    <asynchronous_metric_log>
+        <database>system</database>
+        <table>asynchronous_metric_log</table>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </asynchronous_metric_log>
+</clickhouse>

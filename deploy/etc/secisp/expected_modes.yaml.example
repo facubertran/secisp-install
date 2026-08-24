@@ -1,0 +1,48 @@
+# /etc/secisp/expected_modes.yaml.example — modo esperado por detector
+# (T-036 · E12a-T05).
+#
+# Lo consume el check `detector_modes` del watchdog (E12 §4.8.3): compara el
+# modo EFECTIVO de cada detector (el que corre de verdad, `sec_detect_mode`)
+# contra el modo ESPERADO que declara este archivo; una diferencia es drift de
+# configuración y sale como SEC-OPS-007 (E12 §5.9). El path default es
+# SEC_WATCHDOG_EXPECTED_MODES_PATH=/etc/secisp/expected_modes.yaml (E12 §5.8).
+#
+# Formato: no hay un esquema fijado en ninguna spec de esta ola más allá de
+# "compara el modo efectivo contra el esperado" (E12 §4.8.3) -- el mapeo plano
+# `detector_id: modo` de más abajo es la interpretación más directa de esa
+# frase, no un contrato verificado por ningún test todavía. Cuando el check
+# `detector_modes` aterrice con su propio parser, esa implementación es la
+# fuente de verdad del formato, no este archivo (ver gaps de T-036).
+#
+# El default de TODO detector es `shadow` (arranque en modo seguro, ADR-011),
+# así que un expected_modes.yaml recién instalado que solo diga `shadow` en
+# todos lados no genera drift con nada: es el punto de partida antes de
+# calibrar. Promover un detector (E12 §4.13, D14: de a uno, con ventana de
+# observación) implica cambiar SU modo real Y su entrada acá a la vez -- si
+# solo se cambia el real, el check marca drift a propósito.
+#
+# La lista de `detector_id` de abajo es la unión de los que E05/E06/E07/E08/E09
+# ya declaran en sus specs (grep de `ID: "..."` / `detector_id=` en
+# docs/specs/*.md); ninguna de esas épicas tiene código en el repo todavía en
+# esta ola (corren en olas posteriores), así que esta lista puede quedar
+# incompleta o con nombres que cambien antes de que el detector exista de
+# verdad. Actualizarla es responsabilidad de la task que declare cada detector.
+
+scan.horizontal: shadow
+scan.vertical: shadow
+scan.syn_unanswered: shadow
+scan.coordinated: shadow
+scan.sweep_slow: shadow
+
+smtp.small_session: shadow
+smtp.refused: shadow
+
+ddos.amp_request: shadow
+ddos.carpet_bombing: shadow
+ddos.src_flood: shadow
+ddos.victim_convergence: shadow
+refl.dns: shadow
+
+anomaly.fanout: shadow
+anomaly.volume_spike: shadow
+anomaly.level_shift: shadow

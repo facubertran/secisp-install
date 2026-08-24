@@ -1,0 +1,161 @@
+# infra/prometheus/rules/host.yml
+#
+# T-318 (E12a-T21, ola 8) -- E12 §4.5.2 · E12 §4.6 · E00b D-38 · E12 §3 D13.
+#
+# Las siete alertas de host y operación que cierran el catálogo de E12
+# §4.5.2 que no viven en ningún otro rules/*.yml: disco, el watchdog mismo,
+# el dead-man's switch, el backup, el reloj del exportador y la base
+# geo/ASN.
+#
+# SecDiskPressure usa node_filesystem_avail_bytes (node_exporter, puerto
+# 9100) con el matcher de mountpoint exacto de §4.5.2 -- DELIBERADAMENTE
+# distinto de los checks disk_data/disk_wal/disk_backup del watchdog
+# (internal/obs/checks/disk.go, T-314): esos publican
+# sec_watchdog_check_up{check="disk_*"} vía el mecanismo genérico de
+# checks (statfs directo, streak de confirmación de §4.8.2); esta regla lee
+# node_exporter, la fuente que Prometheus scrapea sin pasar por el
+# watchdog en absoluto (D3: "el watchdog corre solo lo que Prometheus no
+# puede scrapear por su cuenta" -- el espacio en disco SÍ lo puede, via
+# node_exporter). Las dos son señales independientes sobre el mismo hecho
+# físico, no una duplicación: si difieren, ESO es la señal de un bug en
+# alguna de las dos mediciones.
+#
+# SecBackupVerifyFailed referencia sec_ops_backup_verify_last_success_timestamp_seconds,
+# que hoy es un gap documentado (docs/metrics/E12.md, obs.CatalogE12,
+# T-317: la publicaría `secisp backup verify`, que ninguna task de esta
+# ola construye -- T-312 lo deja explícito fuera de su propio alcance). La
+# regla se declara igual, porque T-318 la exige literalmente y E12 §4.5.2
+# la tiene en el listado maestro: sin la regla, el día que `secisp backup
+# verify` exista, alguien tendría que acordarse de agregarla acá también.
+# Con la regla ya escrita y el gap nombrado en el catálogo (no silencioso,
+# D-37), lo único que falta el día de mañana es el publicador.
+groups:
+  - name: secisp-host
+    interval: 30s
+    rules:
+      - alert: SecDiskPressure
+        expr: node_filesystem_avail_bytes{mountpoint=~"/var/lib/(clickhouse|secisp)"} / node_filesystem_size_bytes < 0.15
+        for: 5m
+        labels:
+          severity: warning
+          component: host
+          code: SEC-OPS-001
+        annotations:
+          summary: "Disco {{ $labels.mountpoint }} con menos del 15% libre"
+          description: >-
+            node_filesystem_avail_bytes/node_filesystem_size_bytes < 0.15
+            en {{ $labels.mountpoint }}. Datos de ClickHouse o del WAL del
+            collector -- los dos mountpoints que E12 §4.5.2 nombra.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-09-wal-cerca-de-capacidad.md"
+
+      - alert: SecDiskPressureCritical
+        expr: node_filesystem_avail_bytes{mountpoint=~"/var/lib/(clickhouse|secisp)"} / node_filesystem_size_bytes < 0.07
+        for: 5m
+        labels:
+          severity: critical
+          component: host
+          code: SEC-OPS-001
+        annotations:
+          summary: "Disco {{ $labels.mountpoint }} con menos del 7% libre -- crítico"
+          description: >-
+            Mismo ratio que SecDiskPressure, umbral crítico de E12 §4.5.2
+            ("warn <15%, crit <7%"). A este nivel, ClickHouse puede empezar
+            a rechazar inserts por falta de espacio para nuevas parts.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-09-wal-cerca-de-capacidad.md"
+
+      - alert: SecWatchdogDown
+        expr: up{job="secisp",role="watchdog"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          component: watchdog
+        annotations:
+          summary: "Prometheus no puede scrapear al watchdog"
+          description: >-
+            up{job="secisp",role="watchdog"}=0: sin el watchdog vivo,
+            ningún check de E12 §4.8.3 corre -- toda esa capa de detección
+            de fallos silenciosos queda ciega, aunque el resto del sistema
+            siga funcionando.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-18-watchdog-caido.md"
+
+      - alert: SecDeadmanFailing
+        expr: rate(sec_watchdog_deadman_failures_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: critical
+          component: watchdog
+          code: SEC-OPS-005
+        annotations:
+          summary: "El dead-man's switch no logra confirmar el heartbeat externo"
+          description: >-
+            sec_watchdog_deadman_failures_total creciendo en 15 minutos
+            (D4, §4.8.4): el único aviso que sale del host entero está
+            fallando. Si esto no se resuelve, un host caído queda
+            indistinguible de "todo bien" para cualquiera fuera de la red
+            del ISP.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-19-deadman-fallando.md"
+
+      - alert: SecBackupStale
+        expr: time() - sec_ops_backup_last_success_timestamp_seconds > 172800
+        for: 1h
+        labels:
+          severity: warning
+          component: ops
+          code: SEC-OPS-004
+        annotations:
+          summary: "Sin backup exitoso hace más de 48h"
+          description: >-
+            time() - sec_ops_backup_last_success_timestamp_seconds > 48h.
+            Esa métrica la publica `secisp backup` vía el textfile
+            collector de node_exporter (T-312) -- si el timer diario que lo
+            corre se rompió, esta es la señal.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-20-backup-desactualizado.md"
+
+      - alert: SecBackupVerifyFailed
+        expr: sec_ops_backup_verify_last_success_timestamp_seconds < time() - 691200
+        for: 1h
+        labels:
+          severity: critical
+          component: ops
+          code: SEC-OPS-009
+        annotations:
+          summary: "El backup no se verificó exitosamente en más de 8 días"
+          description: >-
+            sec_ops_backup_verify_last_success_timestamp_seconds < time() -
+            8d. "Un backup que no se verificó no cuenta como backup" (E12
+            §4.14). Gap conocido: `secisp backup verify` (el publicador de
+            esta métrica) todavía no existe -- ver docs/metrics/E12.md.
+            Hasta que exista, esta regla queda sin datos que evaluar, no
+            silenciosamente rota: Prometheus la muestra como "no data",
+            distinguible de "verificado hace poco".
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-21-backup-sin-verificar.md"
+
+      - alert: SecClockSkew
+        expr: sec_collector_export_lag_seconds > 300
+        for: 10m
+        labels:
+          severity: warning
+          component: collector
+        annotations:
+          summary: "El exportador {{ $labels.exporter_id }} tiene un reloj corrido"
+          description: >-
+            sec_collector_export_lag_seconds{exporter_id} > 300s sostenido:
+            la diferencia entre el timestamp del flujo exportado y el
+            momento de recepción es mayor a lo que un NTP sano explica --
+            NTP del router desincronizado, o el propio host del collector.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-22-reloj-desincronizado.md"
+
+      - alert: SecGeoDbStale
+        expr: sec_enrich_geo_db_age_seconds > 2592000
+        for: 1h
+        labels:
+          severity: warning
+          component: enrich
+        annotations:
+          summary: "La base ASN/geo tiene más de 30 días"
+          description: >-
+            sec_enrich_geo_db_age_seconds > 30d: dict_asn/dict_asn_meta
+            (E04 §4.7.2) siguen sirviendo, pero con datos de ASN/geo
+            desactualizados -- clasificación CDN/cloud y país cada vez
+            menos confiable.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-23-geo-db-vieja.md"

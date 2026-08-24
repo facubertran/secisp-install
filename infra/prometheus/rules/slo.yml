@@ -1,0 +1,123 @@
+# infra/prometheus/rules/slo.yml
+#
+# T-313 (E12a-T22) -- E12 §4.5.1 · E12 §4.5.3 · E12 §4.6 · E00b D-38 · E12-26.
+#
+# Las cuatro alertas de objetivo (O1, O2, O4, O6) y las tres reglas de
+# grabación de SLO, literales al ejemplo de E12 §4.5.3/§4.6 -- las seis
+# métricas de D-38 que este archivo consume (sec_detect_mttd_seconds,
+# sec_mit_apply_latency_seconds, sec_mit_action_timeout_seconds ya están
+# declaradas: internal/obs/metrics_detect.go, internal/mitigate/metrics.go
+# (T-293)).
+#
+# Orden DENTRO del archivo, a propósito (criterio de aceptación de T-313):
+# el grupo de alertas va primero y el de grabación después, mismo orden que
+# el ejemplo de §4.6 -- ninguna regla de este archivo consume todavía
+# secisp:ingest_ratio:10m / secisp:decode_p99_seconds:5m /
+# secisp:mttd_p95_seconds:1h (son para el panel de salud de T-320, no para
+# alertar), así que el orden no crea ninguna dependencia real hoy; se deja
+# fijo igual, para que el día que una regla SÍ las consuma no tenga que
+# reordenarse nada.
+#
+# Ventanas largas a propósito (1 h, 6 h, 30 m en vez de 5 m): con pocas
+# detecciones por hora, rate([5m]) sobre un histograma da percentiles que
+# saltan entre 0 y el único valor observado, y la alerta se vuelve un
+# generador de ruido (E12 §4.5.3, "fatiga de alertas" de §7). SecMitApplySlow
+# usa 30m porque O4 se dispara por evento individual (más frecuente que un
+# ataque completo), así que alcanza con una ventana más corta que los MTTD
+# sin caer en el mismo problema.
+#
+# SecMitTimeoutTooLong es la única crítica de las cuatro: O6 es la garantía
+# que impide repetir el incidente de los 90 días, y una violación no es una
+# degradación de calidad sino un cliente bloqueado más de un día. Los tres
+# MTTD/latencia son warning porque un p95 alto durante una hora puede ser un
+# ataque raro, no un sistema roto.
+#
+# `promtool check rules` pasa sobre este archivo y sobre los otros tres que
+# ya existen en este directorio (detect.yml, ingest.yml, secisp-mit.yml) --
+# "los cinco archivos" que el criterio de aceptación de T-313 nombra (E12
+# §4.6: rules/ingest.yml, rules/detect.yml, rules/mitigate.yml, rules/
+# host.yml, rules/slo.yml) se completa recién con T-318 (rules/mitigate.yml,
+# rules/host.yml; secisp-mit.yml de T-293 es un nombre previo a esa
+# convención, que T-318 es quien reconcilia -- no esta task).
+#
+# TestRulesReferenceDeclaredMetrics (E12 §4.6.1, el chequeo genérico contra
+# TODAS las reglas de infra/prometheus/rules/) sigue sin existir --
+# test/rules/scan_metrics_test.go ya documenta que es entregable de una
+# task posterior de ola 11 (test/rules/metrics_declared_test.go +
+# test/rules/parse.go); este archivo no lo adelanta, mismo criterio.
+groups:
+  - name: secisp-objetivos
+    interval: 1m
+    rules:
+      - alert: SecMitTimeoutTooLong
+        expr: max(sec_mit_action_timeout_seconds) > 86400
+        for: 5m
+        labels:
+          severity: critical
+          component: mitigate
+          code: SEC-OPS-010
+        annotations:
+          summary: "Una acción de mitigación tiene timeout de {{ $value | humanizeDuration }} (O6: máx 24 h)"
+          description: >-
+            O6 es la garantía que impide repetir el incidente de los 90
+            días. Una violación no es degradación de calidad: es un
+            cliente que se queda bloqueado más de un día.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-08-cliente-bloqueado-por-error.md"
+
+      - alert: SecMitApplySlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(sec_mit_apply_latency_seconds_bucket[30m]))) > 30
+        for: 10m
+        labels:
+          severity: warning
+          component: mitigate
+        annotations:
+          summary: "O4 degradado: evento → address-list p95 = {{ $value | humanizeDuration }}"
+          description: >-
+            El objetivo O4 es que una acción de mitigación llegue a la
+            address-list del router en 30 s p95 desde el evento que la
+            disparó. Un p95 más alto no bloquea nada por sí solo, pero es
+            la primera señal de que el mitigador o los routers están
+            degradados antes de que O6 (timeout de 24 h) se vea afectado.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-07-router-inalcanzable.md"
+
+      - alert: SecDetectMTTDFloodHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(sec_detect_mttd_seconds_bucket{attack_class="ddos_out"}[1h]))) > 90
+        for: 15m
+        labels:
+          severity: warning
+          component: detect
+        annotations:
+          summary: "O1 degradado: MTTD p95 de flood = {{ $value | humanizeDuration }} (objetivo 90 s)"
+          description: >-
+            Ventana de 1h a propósito: con pocas detecciones de flood por
+            hora, rate([5m]) sobre sec_detect_mttd_seconds_bucket da
+            percentiles que saltan entre 0 y el único valor observado, y
+            la alerta se vuelve ruido en vez de señal.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-10-motor-no-cierra-ventanas.md"
+
+      - alert: SecDetectMTTDScanHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(sec_detect_mttd_seconds_bucket{attack_class="scan"}[6h]))) > 300
+        for: 30m
+        labels:
+          severity: warning
+          component: detect
+        annotations:
+          summary: "O2 degradado: MTTD p95 de escaneo = {{ $value | humanizeDuration }} (objetivo 5 min)"
+          description: >-
+            Ventana de 6h a propósito: los escaneos son menos frecuentes
+            que el flood, así que hace falta una ventana todavía más larga
+            que SecDetectMTTDFloodHigh para que el percentil tenga sentido
+            estadístico en vez de saltar entre valores aislados.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-10-motor-no-cierra-ventanas.md"
+
+  - name: secisp-slo
+    interval: 1m
+    rules:
+      - record: secisp:ingest_ratio:10m
+        expr: |
+          sum(rate(sec_sink_rows_inserted_total[10m]))
+            / clamp_min(sum(rate(sec_collector_flows_decoded_total[10m])), 1)
+      - record: secisp:decode_p99_seconds:5m
+        expr: histogram_quantile(0.99, sum by (le) (rate(sec_collector_decode_duration_seconds_bucket[5m])))
+      - record: secisp:mttd_p95_seconds:1h
+        expr: histogram_quantile(0.95, sum by (le, attack_class) (rate(sec_detect_mttd_seconds_bucket[1h])))

@@ -1,0 +1,43 @@
+# infra/prometheus/prometheus.yml
+#
+# T-034 (E12a-T02) -- E12 §4.1, §4.6, §1.2k.
+#
+# Scrape config con un job por rol y el label `role` puesto a mano en cada
+# target (corrige §1.2k: el prototipo mezclaba goflow2 bajo job="prometheus" y
+# cualquier regla que discrimine por `job` se rompe). Los bloques `secisp`,
+# `node` y `clickhouse` de abajo son literales de E12 §4.6.
+#
+# Las reglas de alerta y de grabación (rules/*.yml, E12 §4.5/§4.6) son
+# entregable de otra task: este archivo solo declara el glob de donde se
+# cargan. infra/prometheus/rules/ hoy solo tiene el .gitkeep de T-003.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: secisp
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:9093"]
+
+scrape_configs:
+  - job_name: "secisp"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["127.0.0.1:9101"]
+        labels: { role: collector }
+      - targets: ["127.0.0.1:9102"]
+        labels: { role: engine }
+      - targets: ["127.0.0.1:9103"]
+        labels: { role: mitigator }
+      - targets: ["127.0.0.1:9104"]
+        labels: { role: watchdog }
+  - job_name: "node"
+    static_configs: [{ targets: ["127.0.0.1:9100"] }]
+  - job_name: "clickhouse"
+    static_configs: [{ targets: ["127.0.0.1:9363"] }]

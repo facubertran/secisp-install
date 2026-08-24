@@ -1,0 +1,25 @@
+# Unidad systemd de `secisp doctor` (T-035 · E12a-T03).
+# No es Type=notify: doctor corre, imprime su reporte y termina (E12 §4.4);
+# no es un rol de los cuatro con readiness de systemd, así que es Type=oneshot
+# disparado por secisp-doctor.timer. Sin flags corre ambos modos (--pre y
+# --post), que es lo que la corrida diaria necesita cubrir.
+[Unit]
+Description=secisp doctor (checks operativos diarios)
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=secisp
+Group=secisp
+ExecStart=/usr/local/bin/secisp doctor --json
+Environment=SEC_ROLE=doctor
+EnvironmentFile=-/etc/secisp/doctor.env
+
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/secisp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

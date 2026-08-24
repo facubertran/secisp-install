@@ -1,0 +1,159 @@
+# infra/prometheus/rules/mitigate.yml
+#
+# T-293 (E11-T21) construyó este archivo bajo el nombre secisp-mit.yml,
+# antes de que E12 §4.6 fijara la convención de nombres de rules/*.yml
+# (ingest.yml/detect.yml/mitigate.yml/host.yml/slo.yml); T-318 (E12a-T21,
+# ola 8) lo renombra y cierra el catálogo de E12 §4.5.2 con las alertas del
+# mitigador que faltaban -- SecRouterDown, SecBlockRateSpike -- y corrige
+# dos desvíos reales que aparecieron al contrastar contra el listado
+# maestro:
+#
+#   1. SecMitigatorMuteWithCases tenía la guarda INVERTIDA: la versión de
+#      T-293 disparaba con sec_mit_enabled == 0 (el kill switch
+#      INTENCIONALMENTE apagado) -- exactamente la alerta-cada-15-minutos
+#      que la Trampa de T-318 advierte, "apagar la mitigación a propósito
+#      durante un incidente genera una alerta crítica... y la gente
+#      aprende a ignorar el canal". La forma correcta (E00 §4.5.2/E12
+#      §4.5.2) es sec_mit_enabled == 1 (el mitigador SÍ debería estar
+#      accionando) AND rate(sec_mit_actions_total[15m]) == 0: el fallo
+#      real es "está prendido, hay casos, y no hace nada".
+#   2. SecMitigatorBreakerOpen se renombra a SecBreakerOpen (el nombre que
+#      el listado maestro fija) y su `for` pasa de 0m a 5m (E00 §4.5.2).
+#
+# SecMitigatorApplyLatencyHighP95/SecMitigatorActionTimeoutExceeds24h de la
+# versión de T-293 se ELIMINAN acá: son la misma condición que
+# rules/slo.yml (T-313) ya cubre con el nombre y la expresión canónicos de
+# E12 §4.5.3 (SecMitApplySlow/SecMitTimeoutTooLong) -- la versión de acá,
+# además, usaba una ventana de 5m sobre un histograma de latencia,
+# exactamente el generador de ruido que la nota de "ventanas largas" de
+# slo.yml documenta. Mantenerlas las dos hubiera alertado dos veces sobre
+# lo mismo, con nombres y umbrales distintos.
+#
+# Las cuatro alertas restantes (RuleMissing, EntriesDriftForeign, más las
+# dos de arriba) siguen respaldadas por las 21 métricas sec_mit_* que
+# internal/mitigate/metrics.go declara (TestMetricsRulesReferenceDeclaredMetrics,
+# en ese mismo paquete, lo hace cumplir para este archivo -- el chequeo
+# genérico de TODAS las reglas de Prometheus, E12 §4.6.1, es entregable de
+# una task posterior de ola 11 y este archivo no lo adelanta, mismo criterio
+# que test/rules/scan_metrics_test.go ya documenta para su propio alcance).
+#
+# Renumeración de runbook_url (T-322, E12b-T33, ola 8): "RB-11" acá
+# apuntaba a un runbook inventado ("mitigador-en-dry-run") que colisionaba
+# con RB-11-calibracion-isp-nuevo.md, el que T-322 efectivamente crea --
+# "RB-12" y "RB-14" con lo mismo, contra reclamos ya existentes en otras
+# tasks (RB-12-verificacion-de-router-antes-de-mitigate,
+# RB-14-upgrade-de-esquema). Se corrige a RB-13-mitigador-en-dry-run-
+# inesperado.md (el nombre YA reservado para este tema exacto en otra
+# task) y se renumeran las dos colisiones restantes a RB-24/RB-25/RB-26
+# (libres). RB-05/RB-06 de rules/detect.yml (ola 6, T-230) tienen el mismo
+# problema -- colisionan con el índice de E12 §4.16 (RB-05=Falsos
+# positivos masivos, RB-06=MV rota) -- pero ESE archivo es de una ola ya
+# cerrada, fuera del alcance de esta task: se documenta acá para que quien
+# lo note después no lo redescubra de cero.
+#
+# code: SEC-MIT-007/009/011 son literales a §5.8. SecMitigatorMuteWithCases,
+# SecRouterDown y SecBlockRateSpike no tienen código propio en §5.8/§4.5.4
+# (son violaciones de objetivo o fallos operativos sin código SEC-MIT-*
+# asignado) -- se documenta la ausencia en vez de forzar un código que no
+# aplica, mismo criterio que SecTransitFlows en detect.yml.
+groups:
+  - name: secisp-mit
+    interval: 30s
+    rules:
+      - alert: SecMitigatorMuteWithCases
+        expr: sum(sec_detect_cases{state="confirmed"}) > 0 and rate(sec_mit_actions_total[15m]) == 0 and sec_mit_enabled == 1
+        for: 15m
+        labels:
+          severity: critical
+          component: mitigator
+        annotations:
+          summary: "Hay casos confirmados y el mitigador no acciona"
+          description: >-
+            sec_mit_enabled=1 (el mitigador debería estar accionando), al
+            menos un caso en state='confirmed', y cero
+            sec_mit_actions_total en 15 minutos. La guarda sec_mit_enabled
+            == 1 es a propósito (E11 §4.15, Trampa de T-318): sin ella,
+            apagar la mitigación durante un incidente generaría esta misma
+            alerta cada 15 minutos.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-13-mitigador-en-dry-run-inesperado.md"
+
+      - alert: SecBreakerOpen
+        expr: sec_mit_breaker_open == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: mitigator
+          code: SEC-MIT-007
+        annotations:
+          summary: "Circuit breaker del mitigador abierto: dry-run global latcheado"
+          description: >-
+            sec_mit_breaker_open=1. Todo plan se audita status='dry_run'
+            hasta que un operador lo reabra (D12: sin auto-resume salvo que
+            SEC_MIT_BREAKER_AUTO_RESUME_SECONDS lo declare). El sistema dejó
+            de proteger.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-24-circuit-breaker-abierto.md"
+
+      - alert: SecMitigatorRuleMissing
+        expr: sec_mit_rule_present == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: mitigator
+          code: SEC-MIT-009
+        annotations:
+          summary: "Falta la regla o el salto que consume una lista del mitigador"
+          description: >-
+            sec_mit_rule_present{router,rule_kind}=0: el mitigador está
+            escribiendo en una address-list que ninguna regla del router lee
+            -- 0 paquetes descartados aunque `status='ok'`. Esa acción
+            degrada a dry_run en ese router hasta que el operador corra
+            `secisp mitigator render-rules` y la instale (T-294).
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-25-regla-de-router-faltante.md"
+
+      - alert: SecMitigatorEntriesDriftForeign
+        expr: sec_mit_entries_drift{kind="foreign"} > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: mitigator
+          code: SEC-MIT-011
+        annotations:
+          summary: "Entrada ajena persistente en una address-list del mitigador"
+          description: >-
+            sec_mit_entries_drift{router,list_kind,kind="foreign"} > 0
+            sostenido: alguien (o algo) agregó una entrada a una lista
+            `secisp_*` por fuera del mitigador. Se cuenta y se audita, nunca
+            se toca (SEC-MIT-011) -- esta alerta es la señal de que vale la
+            pena investigar quién.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-26-entrada-ajena-en-lista.md"
+
+      - alert: SecRouterDown
+        expr: sec_mit_router_up == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: mitigator
+        annotations:
+          summary: "El router {{ $labels.router }} no responde la API de RouterOS"
+          description: >-
+            sec_mit_router_up{router}=0 sostenido: el mitigador no puede
+            aplicar ni verificar ninguna acción contra ese router. El
+            resync (T-289) sigue probando Identity() cada
+            SEC_MIT_RESYNC_SECONDS hasta que vuelva.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-07-router-inalcanzable.md"
+
+      - alert: SecBlockRateSpike
+        expr: increase(sec_mit_actions_total{action=~"block_.*",status="ok"}[1h]) > 15
+        for: 5m
+        labels:
+          severity: critical
+          component: mitigator
+        annotations:
+          summary: "Ráfaga de bloqueos: {{ $value }} en la última hora"
+          description: >-
+            Más de 15 acciones block_* con status='ok' en 1h. Puede ser un
+            ataque real distribuido (gusano, botnet) o un falso positivo
+            masivo (una regla de detección mal calibrada bloqueando medio
+            barrio) -- las dos ameritan mirar `secisp mitigator status` de
+            inmediato, no esperar a la revisión diaria.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-17-rafaga-de-bloqueos.md"

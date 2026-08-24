@@ -1,0 +1,142 @@
+# /etc/secisp/policy.yaml — mapeo detector -> acción, perfiles, escalera y
+# canales de E11 (T-281, E11-T09, §4.13, §4.2.3). Claves desconocidas = fallo
+# ruidoso al arranque (E00 §4.5.3): no hay caída silenciosa a un default.
+#
+# Las 28 entradas de mitigation.detectors cubren el catálogo COMPLETO de
+# 42_dim_detectors.sql (E06 5 + E07 7 + E08 11 + E09 5). Ocho de ellas
+# (scan.coordinated, ddos.victim_convergence, ddos.spoofed_egress y los cinco
+# anomaly.*) quedan en observe/observe porque §4.2.3 no les da ninguna otra
+# acción -- una entrada explícita documenta esa elección en vez de heredarla
+# por omisión del default_action, y apaga sec_mit_policy_unmapped_detectors
+# para el catálogo completo conocido (E00d F-7, criterio de T-281).
+#
+# El perfil "smtp" de mitigation.services (más abajo, [25, 465, 587]) NO
+# incluye 2525 -- discrepancia real contra E07 D9/§5.10 (T-383, E07-T30), que
+# describe tcp/587,465,2525 para la clase msa, y contra E07 §4.5.7/§5.10, que
+# describe smtp.port25_policy como observe por defecto (attack_class='policy').
+# Las dos veces gana E11 §4.2.2/§4.2.3, la tabla que este archivo transcribe
+# literalmente y que E00f ya reconcilió una vez (deuda #10, más abajo) sin
+# tocar ninguna de las dos filas -- smtp.port25_policy sale con block_service/
+# block_service a propósito ("Ídem smtp.fanout", §4.2.3), no por omisión, y el
+# perfil smtp nunca listó 2525. E07 es la épica consumidora que describe lo
+# que ASUME que E11 hace; E11 es quien lo implementa y lo prueba
+# (TestRealPolicyYAMLSixPreviouslyMissingDetectorsDoNotFallToObserve,
+# internal/mitigate/policy_test.go). Este archivo NO se toca para "arreglar"
+# ninguna de las dos filas -- documentado como inconsistencia de spec real,
+# sin resolver, en internal/detect/smtp/doc.go y en la memoria de la sesión.
+#
+# ddos.amp_request queda con la escalera CORREGIDA (E00f deuda #10a):
+# {base: rate_limit, escalated: block_service}, en simetría con refl.* sobre
+# un puerto never_legit=0 -- la versión anterior tenía las dos invertidas
+# ({base: block_service, escalated: rate_limit}), lo que ablandaba la acción
+# justo cuando el score subía y corroboraba. Ver docs/specs/E11-mitigacion-
+# routeros.md §4.2.3 y §4.13, corregidas en el mismo commit que este archivo.
+
+mitigation:
+  default_action: observe
+
+  detectors:
+    # ── smtp.* (E07, 7) ──────────────────────────────────────────────────
+    smtp.fanout:        {base: block_service, service: smtp, escalated: block_service}
+    smtp.small_session:  {base: block_service, service: smtp, escalated: block_service}
+    smtp.stalled:        {base: block_service, service: smtp, escalated: block_service}
+    smtp.low_rate:       {base: block_service, service: smtp, escalated: block_service}
+    # D-33: reputación de terceros. Nunca acciona en solitario (§4.2.4).
+    smtp.refused:        {base: observe, escalated: block_service, service: smtp,
+                          requires_corroboration_from: [session, cardinality],
+                          weak_corroboration_from: [stall]}
+    smtp.volume:         {base: block_service, service: smtp, escalated: block_service}
+    smtp.port25_policy:  {base: block_service, service: smtp, escalated: block_service}
+
+    # ── scan.* (E06, 5) ──────────────────────────────────────────────────
+    scan.horizontal:     {base: block_service, service: auto, match: dst_port, escalated: block_src}
+    scan.vertical:       {base: block_pair,                   escalated: block_src}
+    scan.syn_unanswered: {base: block_service, service: auto, match: dst_port, escalated: block_src}
+    # Ventana de 900s (D-27): la señal es lenta, el margen de error mayor.
+    # No escala a block_src.
+    scan.sweep_slow:     {base: block_service, service: auto, match: dst_port, escalated: block_service}
+    # No figura en §4.2.3 (ni en ninguna fila comodín): cae en observe/observe
+    # a propósito, no por omisión (el cruce de E00f deuda #10b lo señala
+    # explícitamente).
+    scan.coordinated:    {base: observe, escalated: observe}
+
+    # ── ddos.* (E08, 6) ──────────────────────────────────────────────────
+    # base_many/base pasan de rate_limit a block_src a pedido explícito del
+    # operador (primera instalación end-to-end): su router no tiene
+    # capacidad de rate-limit configurada. src_flood.base sigue en
+    # block_pair -- D-31 lo degrada a rate_limit igual (planner_pair.go,
+    # ningún cambio de policy.yaml puede evitarlo), pero desde el fix de
+    # CaseScoped (materialize.go) esa degradación cae en una lista PROPIA
+    # (secisp_pair_src_ddos_src_flood, fija por detector_id -- el operador
+    # necesita UNA regla de RouterOS por lista, escrita una sola vez, no
+    # puede escribir una por caso), no en la compartida secisp_ratelimit_src.
+    ddos.src_flood:      {base: block_pair, base_many: block_src, escalated: block_src}
+    ddos.carpet_bombing: {base: block_src,                        escalated: block_src}
+    ddos.syn_flood:      {base: block_src,                        escalated: block_src}
+    # No figura en §4.2.3: mismo caso que scan.coordinated.
+    ddos.victim_convergence: {base: observe, escalated: observe}
+    # attack_class='policy' (fila comodín de §4.2.3): observe.
+    ddos.spoofed_egress: {base: observe, escalated: observe}
+    # E00d F-7: el detector_id es 'ddos.amp_request' -- 'ddos.amplification'
+    # NO existe ('amplification' es el attack_class, E08 §4.8). El puerto
+    # amplificable es el DESTINO: el cliente que usa reflectores de terceros
+    # sale con src_port EFÍMERO (E08 §4.6.5), así que match=dst_port. Lista
+    # propia por puerto (list: ampreq -> secisp_svc_ampreq_<port>_src), no la
+    # compartida. Escalera CORREGIDA (E00f deuda #10a): ver cabecera.
+    ddos.amp_request:    {base: rate_limit, service: auto, match: dst_port, list: ampreq, escalated: block_service}
+
+    # ── refl.* (E08, 5) ──────────────────────────────────────────────────
+    # D-32: el perfil es por PUERTO, resuelto en runtime desde el evento
+    # (auto:17:53 para refl.dns, auto:17:11211 para refl.memcached, …). NO
+    # existe un perfil 'reflector_udp' que agrupe los siete puertos.
+    #
+    # E00d F-4: la acción base de refl.* NO la fija sola esta línea, la fija
+    # never_legit del puerto en isp.dim_amp_ports (E08 §5.8.1, vinculante):
+    #   never_legit=1 -> base_never_legit (block_service directo)
+    #   never_legit=0 -> base (rate_limit + notificación), y block_service solo
+    #                    como escalada, con score >= 80 y corroboración de otra
+    #                    familia de forma/cardinalidad.
+    # 'base' es también el default cuando el puerto no está en dim_amp_ports.
+    refl.dns:            {base: rate_limit, base_never_legit: block_service, service: auto, match: src_port, escalated: block_service}
+    refl.ntp:            {base: rate_limit, base_never_legit: block_service, service: auto, match: src_port, escalated: block_service}
+    refl.ssdp:           {base: rate_limit, base_never_legit: block_service, service: auto, match: src_port, escalated: block_service}
+    refl.memcached:      {base: rate_limit, base_never_legit: block_service, service: auto, match: src_port, escalated: block_service}
+    refl.generic:        {base: rate_limit, base_never_legit: block_service, service: auto, match: src_port, escalated: block_service}
+
+    # ── anomaly.* (E09, 5) ───────────────────────────────────────────────
+    # method='baseline' nunca acciona solo (E00 §4.3.4): observe siempre.
+    anomaly.volume_spike:  {base: observe, escalated: observe}
+    anomaly.fanout_spike:  {base: observe, escalated: observe}
+    anomaly.level_shift:   {base: observe, escalated: observe}
+    anomaly.new_service:   {base: observe, escalated: observe}
+    anomaly.service_wave:  {base: observe, escalated: observe}
+
+  escalation:
+    lookback_hours: 24
+    ladder_seconds: [1800, 7200, 21600, 86400]
+
+  services:
+    # Único perfil FIJO: su regla se crea al arrancar y nunca se recolecta.
+    smtp: {proto: tcp, dst_ports: [25, 465, 587]}
+    # Los perfiles 'auto:<proto>:<port>' NO se enumeran acá: el puerto sale del
+    # evento y la regla se crea bajo demanda (§4.2.2). El orden de prioridad bajo
+    # SEC_MIT_MAX_SERVICE_RULES sale de isp.dim_amp_ports.never_legit, no de este
+    # archivo.
+    auto:
+      max_rules: 32                 # espeja SEC_MIT_MAX_SERVICE_RULES
+      prefer_never_legit: true      # D-32
+      evict_min_age_k: 5            # E00d F-8: antihistéresis. No se desaloja una
+                                     # regla creada hace menos de
+                                     # SEC_MIT_RESYNC_SECONDS × k (60 × 5 = 300 s).
+      evict_degrade_to: rate_limit  # E00d F-8: qué pasa con el plan desalojado.
+                                     # NUNCA 'observe': un desalojo silencioso deja
+                                     # entradas huérfanas y el panel mintiendo.
+
+  pair:
+    max_rules: 64                   # espeja SEC_MIT_MAX_PAIR_RULES (D-31)
+    max_dsts: 20                    # espeja SEC_MIT_MAX_PAIR_DSTS
+    degrade_to: rate_limit          # al agotarse el tope; NUNCA block_src
+
+  notify:
+    channels: [telegram]
+    dedup_seconds: 900

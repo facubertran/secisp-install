@@ -1,0 +1,36 @@
+# /etc/secisp/never_block.yaml.example — capa 2 del safety rail de E11
+# (T-282, E11-T10, §4.13, §3 D10). Copiar a /etc/secisp/never_block.yaml y
+# editar con los prefijos de infraestructura propia del ISP: DNS recursivos,
+# MX, NTP, monitoreo, cachés de CDN alojadas en la propia red -- todo lo que
+# el mitigador nunca debe poder bloquear, sin importar cuánto score acumule
+# un caso.
+#
+# ESTA LISTA NO ES LA ÚNICA CAPA. Se une (unión, no reemplazo) con:
+#   - una lista compilada de direcciones especiales (loopback, link-local,
+#     multicast, ...) que NUNCA hace falta declarar a mano;
+#   - las IPs de todos los routers de routers.yaml;
+#   - la IP de ClickHouse (SEC_CH_ADDR) y la IP local del propio proceso;
+#   - isp.dim_net_prefixes con scope='infra' O ignore_src=1 (la fuente de
+#     verdad para la infraestructura YA declarada en el enriquecimiento, E04).
+# Una entrada de más en cualquiera de estas fuentes no daña; una de menos
+# deja pasar el ataque contra infraestructura propia (E11 §4.9 punto 2).
+#
+# Claves desconocidas hacen fallar la carga (E00 §4.5.3). Si este archivo no
+# se puede leer al arrancar (falta, YAML roto, un prefix inválido), el
+# mitigador arranca igual pero en dry-run forzado, con SEC-MIT-006 -- las
+# demás capas de esta unión siguen protegiendo mientras tanto (D10 es defensa
+# en profundidad, no un candado único).
+#
+# Campos por entrada (los tres obligatorios):
+#   prefix  IPv4 o IPv6, con máscara ("a.b.c.d/L" o "p::/L"). Un host sin "/"
+#           es inválido: siempre hay que declarar la máscara explícita.
+#   reason  Texto libre: por qué este prefijo nunca se bloquea.
+#   owner   Quién es responsable de la entrada (equipo o persona).
+
+never_block:
+  - prefix: 203.0.113.0/28
+    reason: "DNS recursivos y MX propios"
+    owner: noc
+  - prefix: 2001:db8:ffff::/48
+    reason: "infraestructura de gestión (monitoreo, jump hosts)"
+    owner: noc

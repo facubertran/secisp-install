@@ -1,0 +1,232 @@
+# infra/prometheus/rules/detect.yml
+#
+# T-230 (E12a-T20) -- E12 §4.5.2, §4.6 · E12 §1.1 · E12 §3 D13 · E12 §3 D14 ·
+# E12-04 · E12-05.
+#
+# Las alertas de fallo silencioso de la DETECCIÓN: la razón de ser de esta
+# épica (E12 §1.1) -- el sistema puede seguir corriendo, scrapeando bien, sin
+# un solo proceso caído, y no detectar nada. Cada regla tapa una forma
+# concreta de ese apagón silencioso. El listado maestro vive en
+# docs/specs/E00-arquitectura-y-alcance.md §4.5.2 (TestRulesReferenceDeclaredMetrics,
+# E12 §4.6.1, lo hace cumplir).
+#
+# code: ningún código de E00 §4.5.4 (SEC-OPS-001..010, SEC-ENR-001..003, el
+# catálogo es cerrado) nombra "detección apagada" de forma dedicada por cada
+# síntoma -- mismo criterio que infra/prometheus/rules/ingest.yml ya aplica
+# (ahí, las diez reglas reusan SEC-OPS-002 por ser todas de la MISMA familia
+# de síntoma). Acá:
+#   - SecNoCustomerPrefixes usa SEC-ENR-002: es EXACTAMENTE lo que ese código
+#     define ("sin prefijos de cliente que resolver scope").
+#   - SecAggStale/SecDetectLag/SecDetectStarved reusan SEC-OPS-002: las tres
+#     son variantes de "la maquinaria no está produciendo datos frescos", el
+#     mismo síntoma que agg_freshness/detect_watermark (internal/obs/checks/
+#     freshness.go, T-160) ya citan con ese código.
+#   - SecAllDetectorsShadow/SecDetectorDemoted/SecDetectorAutoDemoted/
+#     SecDictNotLoaded reusan SEC-OPS-007 ("drift de configuración: lo que
+#     hay no coincide con lo esperado"): un modo que cambió sin que un
+#     operador lo haya pedido explícitamente es, estructuralmente, la misma
+#     clase de hecho que mv_attached/dictionaries/detector_modes (T-229) ya
+#     citan con ese código.
+#   - SecTransitFlows y SecFlagsCoverageLost NO llevan `code`: ningún código
+#     cerrado de E00 §4.5.4 describe "aparecen flujos external→external" ni
+#     "un exportador dejó de mandar tcp_flags" sin forzar una lectura
+#     artificiosa de otro código -- se documenta la ausencia acá en vez de
+#     inventar uno.
+groups:
+  - name: secisp-detect
+    interval: 30s
+    rules:
+      - alert: SecNoCustomerPrefixes
+        expr: sec_enrich_prefixes_loaded{kind="customer"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: detect
+          code: SEC-ENR-002
+        annotations:
+          summary: "Sin prefijos de cliente cargados: la detección está apagada"
+          description: >-
+            isp.dim_net_prefixes no tiene ninguna fila scope='customer'
+            is_enabled=1 (ver internal/obs/checks/customer_prefixes.go, T-229).
+            Sin un solo prefijo propio, ningún flujo se marca como origen
+            cliente y toda la detección de E05/E06/E07/E08/E09 queda vacía
+            sin que ningún otro síntoma lo delate: el motor sigue tickeando,
+            sec_detect_runs_total sigue subiendo, y no encuentra nada porque
+            no hay nada que evaluar.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-05-motor-no-detecta-nada.md"
+
+      - alert: SecAggStale
+        expr: sec_watchdog_check_up{check="agg_freshness"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: detect
+          code: SEC-OPS-002
+        annotations:
+          summary: "Una MV de agregado dejó de poblar con ingesta viva"
+          description: >-
+            El check agg_freshness del watchdog (internal/obs/checks/
+            freshness.go, T-160) confirmó DOWN: al menos uno de los
+            agregados de ventana corta (agg_src_10s/agg_src_1m/
+            agg_src_dst_svc_1m/agg_dst_svc_1m) no recibió filas nuevas en
+            5 minutos pese a que ingest_freshness sigue OK -- esta regla
+            lee sec_watchdog_check_up en vez de reimplementar la query: el
+            watchdog ya hizo el trabajo de descartar "sin ingesta, sin
+            agregado no dice nada" (DependsOn en el propio check).
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-10-motor-no-cierra-ventanas.md"
+
+      - alert: SecDetectLag
+        expr: sec_detect_lag_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+          component: detect
+          code: SEC-OPS-002
+        annotations:
+          summary: "El motor de detección no cierra ventanas hace {{ $value | humanizeDuration }}"
+          description: >-
+            sec_detect_lag_seconds{detector_id} mide now() - window_end de
+            la ÚLTIMA ventana evaluada EN VIVO de cada detector (E05 §4.13,
+            "el ÚLTIMO valor observado gana"). Por encima de 5 minutos, ese
+            detector quedó atrás del presente: catch-up excedido, breaker
+            abierto, o el motor mismo dejó de tickear.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-10-motor-no-cierra-ventanas.md"
+
+      - alert: SecDetectStarved
+        expr: |
+          sum(rate(sec_detect_rows_read[15m])) == 0
+            and sum(rate(sec_sink_rows_inserted_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: critical
+          component: detect
+          code: SEC-OPS-002
+        annotations:
+          summary: "El motor corre pero no lee ninguna fila pese a ingesta viva"
+          description: >-
+            La combinación es lo que la hace específica: sec_detect_rows_read
+            en cero por sí solo también describe un ISP sin tráfico. Con
+            sec_sink_rows_inserted_total > 0 en simultáneo, hay datos
+            entrando a ClickHouse y el motor no los está leyendo -- una query
+            de detector rota, un filtro mal puesto, o una tabla que cambió
+            de esquema sin que ninguna otra alerta lo haya atrapado todavía.
+            La guarda del segundo término es la razón de ser de esta regla,
+            no un detalle: sin ella, un ISP nuevo sin tráfico aún dispara
+            SecDetectStarved cada 15 minutos desde el día uno.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-10-motor-no-cierra-ventanas.md"
+
+      - alert: SecAllDetectorsShadow
+        expr: count(sec_detect_mode >= 2) == 0
+        for: 15m
+        labels:
+          severity: warning
+          component: detect
+          code: SEC-OPS-007
+        annotations:
+          summary: "Ningún detector está en alert/mitigate: todo quedó en shadow"
+          description: >-
+            sec_detect_mode >= 2 cuenta detectores en modo alert (2) o
+            mitigate (3) -- D-14, la puerta de calibración por detector.
+            Cero detectores por encima de shadow durante 15 minutos seguidos
+            (nunca justo después de un arranque en frío, donde todo empieza
+            en shadow por diseño) es o bien una calibración que nunca
+            avanzó, o un kill switch (SEC_MIT_ENABLED=false) que degradó a
+            TODOS los detectores de vuelta a shadow sin que nadie lo haya
+            notado.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-06-todos-los-detectores-en-shadow.md"
+
+      - alert: SecDetectorDemoted
+        expr: sec_detect_mode < 2 and (sec_detect_mode offset 1h) >= 2
+        for: 5m
+        labels:
+          severity: warning
+          component: detect
+          code: SEC-OPS-007
+        annotations:
+          summary: "El detector {{ $labels.detector_id }} volvió a shadow"
+          description: >-
+            Hace una hora estaba en alert/mitigate (sec_detect_mode >= 2) y
+            ahora está en shadow/off (< 2). Puede ser un ALTER manual, una
+            recarga en caliente con config.yaml o env cambiados, o el
+            resultado de SecDetectorAutoDemoted -- las dos reglas son
+            complementarias: esta dispara SIEMPRE que hay una degradación,
+            aquella dispara ESPECÍFICAMENTE cuando la causa fue el watchdog
+            (D14, 2 falsos positivos en 7 días).
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-06-todos-los-detectores-en-shadow.md"
+
+      - alert: SecDetectorAutoDemoted
+        expr: increase(sec_ops_detector_demotions_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: detect
+          code: SEC-OPS-007
+        annotations:
+          summary: "El watchdog degradó automáticamente a {{ $labels.detector_id }} a shadow"
+          description: >-
+            D14: 2 etiquetas false_positive en 7 días sobre el mismo
+            detector en modo mitigate lo devuelven a shadow sin
+            intervención humana. `for: 0m` a propósito -- es una acción ya
+            tomada, no una tendencia que necesite confirmarse: el operador
+            tiene que enterarse YA de que un detector dejó de bloquear.
+            sec_ops_detector_demotions_total lo emite el bucle de democión
+            automática de E05 §4.13 -- hasta que ese bucle exista, esta
+            regla no dispara nunca (E12 §4.5.2, nota explícita de la spec).
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-06-todos-los-detectores-en-shadow.md"
+
+      - alert: SecDictNotLoaded
+        expr: sec_watchdog_check_up{check="dictionaries"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: detect
+          code: SEC-OPS-007
+        annotations:
+          summary: "Un diccionario IP_TRIE tiene excepción o no está LOADED"
+          description: >-
+            El check dictionaries del watchdog (internal/obs/checks/
+            dictionaries.go, T-229) confirmó DOWN para dict_net_prefixes o
+            dict_asn: status distinto de LOADED, o last_exception no vacío.
+            Igual que SecAggStale, esta regla lee sec_watchdog_check_up en
+            vez de reimplementar la query contra system.dictionaries.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-05-motor-no-detecta-nada.md"
+
+      - alert: SecTransitFlows
+        expr: sec_watchdog_transit_flows_5m > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: detect
+        annotations:
+          summary: "Aparecen {{ $value }} flujos external→external en 5 minutos: falta un prefijo"
+          description: >-
+            sec_watchdog_transit_flows_5m (internal/obs/checks/scope.go,
+            T-160) es un gauge, no un check que falla activamente -- esta
+            regla ES la alerta real sobre esa métrica (E12 §4.8.3: "delata
+            prefijo faltante"). Un flujo cuyo src Y dst quedan fuera de
+            todo prefijo conocido del ISP no puede ser scope='customer' de
+            ningún lado: casi siempre significa que un bloque de cliente
+            (o un exportador nuevo) no se cargó en isp.dim_net_prefixes.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-05-motor-no-detecta-nada.md"
+
+      - alert: SecFlagsCoverageLost
+        expr: |
+          sec_detect_scan_flags_coverage_ratio < 0.1
+            and (sec_detect_scan_flags_coverage_ratio offset 24h) > 0.5
+        for: 30m
+        labels:
+          severity: warning
+          component: detect
+        annotations:
+          summary: "flags_valid_ratio de scan.* se derrumbó respecto de hace 24 h"
+          description: >-
+            Los detectores de familia flags (scan.syn_unanswered y
+            similares) dependen de tcp_flags para distinguir SYN sin
+            respuesta de tráfico normal. Un router que dejó de exportar
+            TCP_FLAGS (plantilla NetFlow v9/IPFIX vieja, o un campo mal
+            configurado) hace que esos detectores degraden en silencio --
+            RequiresTCPFlags ya penaliza la confidence por esto (E05
+            §4.6.3), pero la degradación sostenida durante 30 minutos, con
+            un valor previo sano hace 24 h, es la señal de que la causa es
+            el EXPORTADOR y no una racha de tráfico rara.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-05-motor-no-detecta-nada.md"

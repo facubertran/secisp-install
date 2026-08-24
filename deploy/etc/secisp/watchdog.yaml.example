@@ -1,0 +1,36 @@
+# /etc/secisp/watchdog.yaml.example — extracto de referencia de la sección
+# `watchdog:` (T-036 · E12a-T05).
+#
+# Misma salvedad que los otros tres *.yaml.example de rol: es la sección
+# `watchdog:` para copiar/pegar dentro de config.yaml. El instalador lo copia
+# a /etc/secisp/watchdog.yaml si no existe.
+#
+# Las 16 variables SEC_WATCHDOG_* de E12 §5.8, literales.
+
+watchdog:
+  interval_seconds: 30                        # SEC_WATCHDOG_INTERVAL_SECONDS
+  fail_streak: 3                              # SEC_WATCHDOG_FAIL_STREAK — anti-rebote, heredado del prototipo
+  ch_timeout_seconds: 8                       # SEC_WATCHDOG_CH_TIMEOUT_SECONDS
+  flows_stale_seconds: 180                    # SEC_WATCHDOG_FLOWS_STALE_SECONDS
+  agg_stale_seconds: 300                      # SEC_WATCHDOG_AGG_STALE_SECONDS
+  exporter_stale_seconds: 600                 # SEC_WATCHDOG_EXPORTER_STALE_SECONDS
+  disk_warn_pct: 85                           # SEC_WATCHDOG_DISK_WARN_PCT
+  disk_crit_pct: 93                           # SEC_WATCHDOG_DISK_CRIT_PCT
+  collector_debug_url: http://127.0.0.1:9101  # SEC_WATCHDOG_COLLECTOR_DEBUG_URL
+  alertmanager_url: http://127.0.0.1:9093     # SEC_WATCHDOG_ALERTMANAGER_URL
+
+  # SEC_WATCHDOG_DEADMAN_URL vacía es FAIL en `secisp doctor --pre` (D4: dead-
+  # man's switch obligatorio). Queda sin comentar y en blanco a propósito para
+  # que el operador no se olvide de completarla -- no se inventa un valor acá.
+  deadman_url: ""                             # SEC_WATCHDOG_DEADMAN_URL
+  deadman_interval_seconds: 60                # SEC_WATCHDOG_DEADMAN_INTERVAL_SECONDS
+
+  fallback_enabled: true                      # SEC_WATCHDOG_FALLBACK_ENABLED — canal directo si Alertmanager no responde
+  # SEC_WATCHDOG_FALLBACK_WEBHOOK vacío es una decisión (P12), no un olvido:
+  # con Alertmanager entregando, la excepción del canal directo solo aplica si
+  # Alertmanager está caído, y para eso está el dead-man's switch. `doctor` no
+  # marca esto como FAIL -- a diferencia de deadman_url, que sí.
+  fallback_webhook: ""                        # SEC_WATCHDOG_FALLBACK_WEBHOOK
+
+  instance_name: ""                                     # SEC_WATCHDOG_INSTANCE_NAME — default: hostname
+  expected_modes_path: /etc/secisp/expected_modes.yaml   # SEC_WATCHDOG_EXPECTED_MODES_PATH

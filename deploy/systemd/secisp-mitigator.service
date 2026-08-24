@@ -1,0 +1,38 @@
+# Unidad systemd del rol mitigator de secisp (T-035 · E12a-T03).
+# Análoga a secisp-collector.service (E12 §4.3): mismo hardening y Type=notify.
+# Diferencia dura: las credenciales de router NO se leen de /etc/secisp/routers.yaml
+# directamente. LoadCredential= las copia a un tmpfs privado de esta unidad
+# (systemd-creds) al que ningún otro servicio, ni un `docker cp`, puede llegar;
+# SEC_MIT_ROUTERS_PATH se reapunta a esa copia vía el especificador %d.
+[Unit]
+Description=secisp mitigator (mitigación RouterOS)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=secisp
+Group=secisp
+ExecStart=/usr/local/bin/secisp mitigator --config /etc/secisp/config.yaml
+Environment=SEC_ROLE=mitigator
+Environment=SEC_METRICS_ADDR=127.0.0.1:9103
+EnvironmentFile=-/etc/secisp/mitigator.env
+
+LoadCredential=routers:/etc/secisp/routers.yaml
+Environment=SEC_MIT_ROUTERS_PATH=%d/routers
+
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/secisp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+Restart=always
+RestartSec=2
+# KillSignal por defecto (SIGTERM) + margen para no dejar una acción de mitigación a medias:
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,40 @@
+#!/usr/sbin/nft -f
+# Generado por `secisp config apply --nftables` (T-394, E12b-T31, E12 §4.17,
+# P12-15). NO EDITAR A MANO: la próxima corrida de `config apply --nftables`
+# sobreescribe este archivo entero con lo que isp.dim_exporters diga en ese
+# momento (is_enabled=1). Reaplicar tras cualquier alta/baja de exportador
+# con `nft -f <este archivo>` o `systemctl reload nftables` -- config apply
+# solo escribe el archivo, nunca toca la tabla nftables viva en caliente
+# (mismo criterio que `secisp mitigator render-rules`: render y aplicar son
+# dos pasos separados, el segundo siempre lo dispara un operador).
+#
+# Alcance deliberadamente angosto (E12 §4.17: "Collector UDP en internet"):
+# esta tabla filtra SOLO los cuatro puertos UDP de flujo (NetFlow v5/v9,
+# IPFIX, sFlow). No fija policy sobre ningún otro tráfico ni redefine otras
+# tablas/cadenas del host -- un ISP que ya tiene su propio firewall en
+# nftables puede cargar esta tabla junto al resto sin conflicto de reglas,
+# aunque SÍ compite por la cadena `input` con cualquier otra base chain que
+# tenga hook input (revisar prioridades si el ISP ya usa una).
+#
+# secisp doctor --post (SEC-OPS-007) compara los sets de acá contra
+# isp.dim_exporters en cada corrida y FAILea si divergen -- ver
+# internal/ops/nftables/drift.go.
+
+table inet secisp {
+	set exporters_v4 {
+		type ipv4_addr
+		elements = { {{range $i, $ip := .V4}}{{if $i}}, {{end}}{{$ip}}{{end}} }
+	}
+
+	set exporters_v6 {
+		type ipv6_addr
+		elements = { {{range $i, $ip := .V6}}{{if $i}}, {{end}}{{$ip}}{{end}} }
+	}
+
+	chain input_flow_ports {
+		type filter hook input priority -10; policy accept;
+		udp dport { 2055, 4739, 6343, 9995 } ip saddr @exporters_v4 accept
+		udp dport { 2055, 4739, 6343, 9995 } ip6 saddr @exporters_v6 accept
+		udp dport { 2055, 4739, 6343, 9995 } counter drop
+	}
+}

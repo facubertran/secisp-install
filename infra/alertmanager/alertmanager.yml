@@ -1,0 +1,90 @@
+# infra/alertmanager/alertmanager.yml
+#
+# T-319 (E12a-T25, ola 8) -- E12 §4.7 · E12 §4.7.1 · E12 §3 D2 · E12 §1.2a ·
+# E00 §9 P12 · E02 Q7.
+#
+# El route/inhibit_rules de abajo son literales al ejemplo de E12 §4.7: no
+# se inventa nada ahí. Lo que esta task agrega sobre ese ejemplo son los
+# receivers reales -- Telegram, la única línea que quedó (P12 + E02 Q7,
+# E12 §4.7.1: "un canal para el operador, ninguno para el cliente" -- el
+# canal INFORMA, no participa de ninguna máquina de estados de E11).
+#
+# El token de Telegram NUNCA aparece acá: bot_token_file apunta a
+# /run/secrets/telegram_bot_token, un archivo que Docker Compose monta
+# desde infra/secrets/telegram_bot_token (gitignored, ver infra/
+# docker-compose.yml y deploy/systemd/secisp-alertmanager-credentials.md).
+# D1 (E12 §3) es literal sobre por qué: "la lección no era 'no usar
+# Telegram', era 'no versionar el token'" -- el bug exacto del
+# `env_file` con comillas del prototipo.
+#
+# La distinción critical/warning YA NO decide si algo se manda (las dos
+# van al mismo canal, Telegram, no hay dos destinos): decide el
+# repeat_interval (1h vs 6h) y CUÁNTO se re-notifica -- sigue siendo la
+# variable que importa para no entrenar a nadie a ignorar el teléfono, ver
+# docs/ops/alertas.md (la revisión de qué suena de noche que el criterio
+# de aceptación de esta task exige).
+route:
+  group_by: [alertname, component]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 6h
+  receiver: noc
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: noc-urgente
+      repeat_interval: 1h
+    - matchers:
+        - component="mitigate"
+        - severity="critical"
+      receiver: noc-urgente
+      continue: true # además va al canal de mitigación
+
+inhibit_rules:
+  # Si ClickHouse está caído, no notificar sus ocho consecuencias (sink,
+  # detect y mitigate dependen todos de poder escribir/leer ClickHouse).
+  - source_matchers:
+      - alertname="SecClickHouseDown"
+    target_matchers:
+      - component=~"sink|detect|mitigate"
+    equal: [instance]
+  # Si la ingesta está detenida, "el motor no lee filas"/"no cierra
+  # ventanas"/"el agregado no se pobló" son la misma causa raíz repetida.
+  - source_matchers:
+      - alertname="SecIngestStopped"
+    target_matchers:
+      - alertname=~"SecAggStale|SecDetectStarved|SecDetectLag"
+  # Un exportador mudo explica su propia caída de cobertura de flags: no
+  # hace falta una segunda alerta diciendo lo mismo con otro nombre.
+  - source_matchers:
+      - alertname="SecExporterMute"
+    target_matchers:
+      - alertname="SecFlagsCoverageLost"
+    equal: [exporter_id]
+
+receivers:
+  - name: noc
+    telegram_configs:
+      - bot_token_file: /run/secrets/telegram_bot_token
+        chat_id: -1001234567890 # CHANGE_ME: el chat_id numérico del grupo/canal de Telegram del operador (deploy/systemd/secisp-alertmanager-credentials.md)
+        parse_mode: "HTML"
+        message: >-
+          <b>[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}</b>
+          ({{ .CommonLabels.component }}, {{ .CommonLabels.severity }})
+          {{ range .Alerts }}
+          {{ .Annotations.summary }}
+          {{ .Annotations.runbook_url }}
+          {{ end }}
+
+  - name: noc-urgente
+    telegram_configs:
+      - bot_token_file: /run/secrets/telegram_bot_token
+        chat_id: -1001234567890 # CHANGE_ME: el chat_id numérico del grupo/canal de Telegram del operador (deploy/systemd/secisp-alertmanager-credentials.md)
+        parse_mode: "HTML"
+        message: >-
+          🚨 <b>[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}</b>
+          ({{ .CommonLabels.component }}, CRÍTICA)
+          {{ range .Alerts }}
+          {{ .Annotations.summary }}
+          {{ .Annotations.runbook_url }}
+          {{ end }}

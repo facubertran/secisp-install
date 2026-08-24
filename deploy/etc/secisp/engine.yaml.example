@@ -1,0 +1,57 @@
+# /etc/secisp/engine.yaml.example — extracto de referencia de la sección
+# `detect:` del motor de detección (T-036 · E12a-T05).
+#
+# Misma salvedad que collector.yaml.example: E12 §4.3 lista `engine.yaml` como
+# "override por rol", pero las unidades de T-035 pasan `--config
+# /etc/secisp/config.yaml` para los cuatro roles y ningún cargador de este
+# repo lee todavía un segundo archivo por rol. Este archivo es la plantilla de
+# la sección `detect:` para copiar/pegar dentro de config.yaml; el instalador
+# lo copia a /etc/secisp/engine.yaml si no existe, pero eso por sí solo no lo
+# hace efectivo.
+#
+# Dueño de todo lo de acá: E05 (motor de detección), tabla consolidada en
+# E00 §4.5.3 (E00b D-29). Los umbrales propios de cada familia de detector
+# (SEC_DETECT_SCAN_*, SEC_DETECT_SMTP_*, SEC_DETECT_DDOS_*, ...) NO van acá:
+# viven en el código del detector o bajo `detectors.<id>` -- son de las tasks
+# de E05/E06/E07/E08/E09 que corren en otras olas, no de esta.
+
+detect:
+  tick_seconds: 10                        # SEC_DETECT_TICK_SECONDS
+  window_grace_seconds: 15                # SEC_DETECT_WINDOW_GRACE_SECONDS — único grace del sistema
+  max_catchup_windows: 30                 # SEC_DETECT_MAX_CATCHUP_WINDOWS
+  revisit_windows: 5                      # SEC_DETECT_REVISIT_WINDOWS
+  revisit_min_delta_pct: 1.0              # SEC_DETECT_REVISIT_MIN_DELTA_PCT
+  revisit_max_evals: 3                    # SEC_DETECT_REVISIT_MAX_EVALS
+  ingest_max_stale_seconds: 120           # SEC_DETECT_INGEST_MAX_STALE_SECONDS
+  query_timeout_seconds: 20               # SEC_DETECT_QUERY_TIMEOUT_SECONDS (T-378: 20, no 15 -- ver el "Gotcha resuelto" de internal/config/detect.go)
+  max_memory_bytes: 2147483648            # SEC_DETECT_MAX_MEMORY_BYTES
+  max_rows_read: 200000000                # SEC_DETECT_MAX_ROWS_READ
+  max_concurrent_queries: 3               # SEC_DETECT_MAX_CONCURRENT_QUERIES
+  max_threads_per_query: 2                # SEC_DETECT_MAX_THREADS_PER_QUERY
+  max_events_per_run: 5000                # SEC_DETECT_MAX_EVENTS_PER_RUN
+  breaker_fails: 3                        # SEC_DETECT_BREAKER_FAILS
+  breaker_cooldown_seconds: 300           # SEC_DETECT_BREAKER_COOLDOWN_SECONDS
+  warmup_seconds: 300                     # SEC_DETECT_WARMUP_SECONDS — nada acciona tras arrancar el motor
+  maintenance: false                      # SEC_DETECT_MAINTENANCE — ventana de mantenimiento global, suprime todo
+  min_consecutive_default: 2              # SEC_DETECT_MIN_CONSECUTIVE_DEFAULT
+  streak_max_keys: 200000                 # SEC_DETECT_STREAK_MAX_KEYS
+  streak_gap_tolerance: 0                 # SEC_DETECT_STREAK_GAP_TOLERANCE
+  suppress_reload_seconds: 60             # SEC_DETECT_SUPPRESS_RELOAD_SECONDS
+  suppress_max_rules: 200                 # SEC_DETECT_SUPPRESS_MAX_RULES
+  suppress_max_ttl_days: 365              # SEC_DETECT_SUPPRESS_MAX_TTL_DAYS
+  max_shed_ratio: 0.2                     # SEC_DETECT_MAX_SHED_RATIO
+  baseline_veto_enabled: true             # SEC_DETECT_BASELINE_VETO_ENABLED
+  hybrid_enabled: true                    # SEC_DETECT_HYBRID_ENABLED
+  case_idle_seconds: 900                  # SEC_DETECT_CASE_IDLE_SECONDS
+  case_sync_seconds: 30                   # SEC_DETECT_CASE_SYNC_SECONDS
+  case_reopen_seconds: 1800               # SEC_DETECT_CASE_REOPEN_SECONDS
+  case_stuck_seconds: 600                 # SEC_DETECT_CASE_STUCK_SECONDS
+  max_live_cases: 50000                   # SEC_DETECT_MAX_LIVE_CASES
+  # engine_instance: ""                   # SEC_DETECT_ENGINE_INSTANCE — default: hostname, se deja sin fijar
+
+# Override por detector individual (E05 §4.12), con el default de todo
+# detector en `shadow` (arranque en modo seguro, ADR-011). Agregar una entrada
+# solo cuando se decide promover ESE detector puntual, nunca por familia.
+# detectors:
+#   scan.horizontal:
+#     mode: shadow

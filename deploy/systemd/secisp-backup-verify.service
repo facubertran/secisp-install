@@ -1,0 +1,34 @@
+# Unidad systemd de `secisp backup verify` (T-350 · E12b-T27).
+# Type=oneshot (mismo criterio que secisp-doctor.service): corre, restaura
+# el backup más reciente en un ClickHouse efímero (testcontainers-go,
+# internal/ops/backup/verify.go), compara contra manifest.json, publica
+# sec_ops_backup_verify_last_success_timestamp_seconds SOLO en éxito, y
+# termina. SecBackupVerifyFailed (infra/prometheus/rules/*.yml, E12 §5.9)
+# dispara sobre esa métrica envejeciendo, no sobre el exit code de esta
+# unidad -- por eso no hay OnFailure= acá: la ausencia de éxito reciente
+# YA es la señal.
+#
+# Necesita Docker (levanta y tira un contenedor ClickHouse efímero por
+# corrida): a diferencia de secisp-doctor.service, NO puede correr con
+# ProtectSystem=strict/PrivateTmp -- ambos rompen el acceso al socket de
+# Docker y a los directorios temporales que testcontainers-go necesita.
+[Unit]
+Description=secisp backup verify (restore de verificación semanal, E12 D10)
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=secisp
+Group=secisp
+SupplementaryGroups=docker
+ExecStart=/usr/local/bin/secisp backup verify
+Environment=SEC_ROLE=backup-verify
+EnvironmentFile=-/etc/secisp/backup.env
+
+TimeoutStartSec=15min
+
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/secisp /var/backups/secisp /var/lib/node_exporter/textfile_collector

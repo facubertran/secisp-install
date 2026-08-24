@@ -1,0 +1,52 @@
+# Unidad systemd del rol collector de secisp (T-035 · E12a-T03).
+# Literal de E12 §4.3: es la unidad de referencia; engine/mitigator/watchdog son
+# análogas (mismo hardening, sin la nota sobre capacidades de red, que es
+# específica del collector porque es el único rol que bindea sockets UDP).
+#
+# Type=notify + internal/obs/sdnotify.go (T-010): systemd no marca la unidad
+# "active" hasta que el proceso manda READY=1 de verdad (docs/ops/readiness.md),
+# así que `systemctl restart secisp-collector` bloquea hasta que el reemplazo
+# esté operativo, y falla si no llega dentro de TimeoutStartSec.
+#
+# Nice=-5 / IOSchedulingClass=best-effort (E01 D14, T-164): ClickHouse corre en el
+# MISMO host (E00 §8) — si compiten por CPU/IO, el que pierde tiene que ser
+# ClickHouse, no el collector, porque el collector tiene un buffer de kernel de
+# 16 MiB y ninguna forma de pedir retransmisión de un datagrama UDP perdido. GOGC,
+# GOMEMLIMIT y GOMAXPROCS son la otra mitad de D14 y se aplican en código
+# (cmd/secisp/collector.go, applyRuntimeTuning) contra la RAM real del host, no acá
+# como Environment=: un operador que necesite un GOMEMLIMIT distinto lo puede fijar
+# en /etc/secisp/collector.env (abajo), que gana porque el runtime de Go respeta
+# GOMEMLIMIT del entorno si ya está seteado.
+[Unit]
+Description=secisp collector (NetFlow/IPFIX/sFlow)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=secisp
+Group=secisp
+ExecStart=/usr/local/bin/secisp collector --config /etc/secisp/config.yaml
+Environment=SEC_ROLE=collector
+Environment=SEC_METRICS_ADDR=127.0.0.1:9101
+EnvironmentFile=-/etc/secisp/collector.env
+
+# El collector NO necesita root: bindea puertos > 1024 y no toca el kernel.
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/secisp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=8G
+Nice=-5
+IOSchedulingClass=best-effort
+Restart=always
+RestartSec=2
+# KillSignal por defecto (SIGTERM) + margen para drenar cola y WAL:
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

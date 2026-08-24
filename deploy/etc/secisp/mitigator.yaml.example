@@ -1,0 +1,29 @@
+# /etc/secisp/mitigator.yaml.example — extracto de referencia de la sección
+# `mit:` del mitigador (T-036 · E12a-T05).
+#
+# Misma salvedad que collector.yaml.example y engine.yaml.example: es la
+# sección `mit:` para copiar/pegar dentro de config.yaml (las unidades de
+# T-035 no leen un config por rol separado todavía). El instalador lo copia a
+# /etc/secisp/mitigator.yaml si no existe.
+#
+# Acá solo van las seis variables SEC_MIT_* que E00 §4.5.3 ya fija (el núcleo
+# transversal: kill switch, timeouts, topes). El resto del contrato de
+# mitigación -- cooldowns, circuit breaker granular, render de reglas
+# RouterOS -- es de E11 y sus propias tasks en otras olas; no se transcribe
+# acá para no inventar un default que este archivo no fija. SEC_MIT_TLS_
+# INSECURE y SEC_MIT_ROUTER_CA_FILE SÍ están implementadas desde T-393 (E12b-
+# T32, ola 11, internal/ops/secops) pero documentadas en
+# deploy/config/routers.yaml.example, no acá: son overrides de proceso sobre
+# routers.yaml, no claves de la sección `mit:` de config.yaml.
+#
+# Credenciales de router: NUNCA en este archivo. Van en
+# /etc/secisp/routers.yaml (0600 root:secisp), que systemd entrega al proceso
+# vía `LoadCredential=` (E12 §4.3) -- ningún otro archivo, ni este, las toca.
+
+mit:
+  enabled: false                              # SEC_MIT_ENABLED — kill switch global; D8: no se habilita antes de los 30 días
+  routers_path: /etc/secisp/routers.yaml      # SEC_MIT_ROUTERS_PATH — en la unidad systemd la pisa SEC_MIT_ROUTERS_PATH=%d/routers (LoadCredential)
+  default_timeout_seconds: 1800               # SEC_MIT_DEFAULT_TIMEOUT_SECONDS
+  max_timeout_seconds: 86400                  # SEC_MIT_MAX_TIMEOUT_SECONDS — tope duro (O6)
+  max_actions_per_tick: 100                   # SEC_MIT_MAX_ACTIONS_PER_TICK
+  max_customers_blocked_per_hour: 20          # SEC_MIT_MAX_CUSTOMERS_BLOCKED_PER_HOUR — circuit breaker

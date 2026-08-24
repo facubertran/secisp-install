@@ -1,0 +1,84 @@
+# Unidad systemd TEMPLATE del hand-off de binario del collector (T-391 ·
+# E12b-T28 · E12 D11 · E12 §4.15.1).
+#
+# En la práctica solo se instancia como `secisp-collector@next.service`
+# (scripts/upgrade/binary.sh es el único invocador real, y D11/§4.15.1 solo
+# nombran "next"), pero queda como unidad @ genérica -- no
+# "secisp-collector-next.service" -- porque systemd resuelve %i (el nombre
+# después de la @) en ExecStart/Environment= abajo sin que este archivo tenga
+# que hardcodear "next" dos veces (acá y en el binario instalado).
+#
+# Diferencias DELIBERADAS contra secisp-collector.service (la unidad de
+# referencia, mismo comentario de cabecera que ese archivo explica el resto
+# del hardening -- acá solo se documenta lo que CAMBIA):
+#
+#   - ExecStart apunta a /usr/local/bin/secisp.%i (secisp.next), NO al
+#     /usr/local/bin/secisp de siempre: el binario nuevo instalado por
+#     `install -m 0755 secisp.new /usr/local/bin/secisp.next` (§4.15.1,
+#     paso 3) -- swapearlo al nombre real es el paso 3.5 del script, DESPUÉS
+#     de que el viejo se detiene.
+#
+#   - SEC_METRICS_ADDR es 127.0.0.1:9102, NO 127.0.0.1:9101: el puerto UDP de
+#     flujos (netflow/ipfix/sflow, config.yaml) queda IDÉNTICO al del viejo a
+#     propósito -- SO_REUSEPORT exige el MISMO puerto para que el kernel
+#     reparta por hash entre los dos -- pero /metrics y /debug/templates
+#     corren sobre UN único http.Server por rol (internal/collector/http.go:
+#     "un servidor HTTP por rol, SEC_METRICS_ADDR"), así que con los dos
+#     procesos vivos a la vez durante el hand-off, CUALQUIER puerto repetido
+#     ahí sí colisiona de verdad (bind: address already in use). El script de
+#     hand-off sondea justamente esta dirección nueva
+#     (curl localhost:9102/debug/templates), no la de siempre -- ver
+#     scripts/upgrade/binary.sh y RB-13.
+#
+#   - Sin [Install]/WantedBy: esta instancia NUNCA arranca sola al boot ni
+#     con `systemctl enable` -- solo existe durante la ventana de hand-off,
+#     arrancada y detenida a mano (o por el script) con
+#     `systemctl start/stop secisp-collector@next`. Habilitarla sería dejar
+#     un segundo receptor de flujos vivo después de un reinicio del host, sin
+#     que nadie lo pidiera.
+#
+#   - ConditionPathExists=/usr/local/bin/secisp.%i: si el binario nuevo
+#     todavía no se instaló (paso 3 de §4.15.1 no corrió, o falló), la
+#     unidad se salta en vez de fallar con un error de "file not found"
+#     menos claro -- `systemctl start` sobre una unidad con la condición sin
+#     cumplir devuelve éxito pero la unidad queda "inactive (dead)" en vez de
+#     "active": scripts/upgrade/binary.sh chequea el resultado real
+#     (ActiveState), no solo el código de salida de systemctl.
+[Unit]
+Description=secisp collector (NetFlow/IPFIX/sFlow) -- instancia de hand-off (T-391)
+After=network-online.target docker.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/secisp.%i
+
+[Service]
+Type=notify
+User=secisp
+Group=secisp
+ExecStart=/usr/local/bin/secisp.%i collector --config /etc/secisp/config.yaml
+Environment=SEC_ROLE=collector
+Environment=SEC_METRICS_ADDR=127.0.0.1:9102
+EnvironmentFile=-/etc/secisp/collector.env
+
+# Mismo hardening que secisp-collector.service, sin excepciones: esta
+# instancia recibe tráfico real (su ~50% del hash de SO_REUSEPORT) apenas
+# bindea, así que corre con las mismas restricciones que la de producción, no
+# unas más laxas "porque es temporal".
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/secisp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=8G
+Nice=-5
+IOSchedulingClass=best-effort
+# Sin Restart=always (a diferencia de la unidad de producción): un fallo de
+# ESTA instancia durante el hand-off tiene que ser visible y detener el
+# procedimiento (el script lee el estado y aborta), no reintentar en
+# silencio mientras el viejo sigue activo.
+Restart=no
+TimeoutStopSec=60
+
+# Sin [Install]: ver el comentario de cabecera. Esta unidad no se habilita.

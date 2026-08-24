@@ -1,0 +1,20 @@
+# deploy/grafana/provisioning/dashboards/secisp.yml — E10 §4.10.2, literal.
+#
+# allowUiUpdates: false + editable: false en cada JSON de deploy/grafana/
+# dashboards/: un cambio hecho en la UI no se puede guardar, a propósito. El
+# flujo es editar en la UI -> "Save" ofrece copiar el JSON -> pegarlo en el
+# repo -> PR -> CI (`secisp dashboards lint`) -> despliegue. `path` apunta al
+# volumen que infra/docker-compose.yml monta para el servicio grafana.
+apiVersion: 1
+providers:
+  - name: secisp
+    orgId: 1
+    folder: SECISP
+    folderUid: secisp
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/secisp
+      foldersFromFilesStructure: false

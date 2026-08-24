@@ -1,0 +1,122 @@
+{
+  "uid": "secisp-ip",
+  "title": "SECISP · Investigación por IP",
+  "description": "Vista de una sola IP origen: a qué destinos y puertos le manda tráfico, qué detectó el motor, y qué hizo el mitigador -- pedido explícito del operador (\"esta IP origen está haciendo flood a X puertos a X IPs, y así\" -- necesita ver el detalle completo, no solo el resultado final de un caso). Requiere $src_ip: sin ese dato las queries devuelven cero filas a propósito (toIPv6OrNull), para no listar tráfico de todo el ISP por accidente.",
+  "tags": ["secisp", "ip", "forense"],
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["30s", "1m", "5m", "15m"],
+    "quick_ranges": ["now-15m", "now-1h", "now-6h", "now-24h"]
+  },
+  "links": [
+    { "type": "dashboards", "title": "SECISP", "tags": ["secisp"], "asDropdown": false,
+      "includeVars": true, "keepTime": true }
+  ],
+  "annotations": { "list": [] },
+  "templating": { "list": [
+    { "name": "ds_ch", "type": "datasource", "query": "grafana-clickhouse-datasource",
+      "current": { "text": "SECISP ClickHouse", "value": "secisp-clickhouse" }, "hide": 2 },
+    { "name": "src_ip", "type": "textbox", "label": "IP origen", "current": { "text": "", "value": "" } }
+  ]},
+  "panels": [
+    {
+      "id": 1, "type": "text",
+      "title": "Cómo usar este dashboard",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "Escribí una IP (v4 o v6) en la variable **IP origen** de arriba. Todas las queries de acá abajo filtran con `toIPv6OrNull('$src_ip')` -- si el textbox está vacío o el texto no parsea como IP, las tablas quedan vacías a propósito (nunca listan tráfico de todo el ISP por un descuido). Los paneles leen `isp.v_agg_src_dst_svc_1m_flat`/`isp.v_agg_src_10s` (flujo crudo agregado, independiente de si el motor de detección corrió), `isp.v_det_events`/`isp.v_det_cases` (qué detectó, si corrió) y `isp.v_mit_actions` (qué se aplicó, si el mitigador está habilitado) -- las tres fuentes pueden tener datos aunque las otras dos estén vacías, cada panel funciona con lo que haya.\n\n**Sin verificar contra ClickHouse real** (escrito sin Docker disponible en el entorno donde se armó este archivo) -- revisar la primera corrida real con cuidado, especialmente `isp_svc_str`/`toIPv6OrNull`."
+      }
+    },
+    {
+      "id": 2, "type": "table", "title": "Top destinos",
+      "description": "A qué IPs le manda tráfico esta fuente, ordenado por paquetes -- la respuesta directa a \"a qué IPs\".",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT dst_ip_str AS \"Destino\", max(dst_asn) AS \"ASN\", sum(packets) AS \"Paquetes\", round(sum(bytes) / 1e6, 2) AS \"MB\", uniqExact(dst_port) AS \"Puertos distintos\", min(first_seen) AS \"Primera vez\", max(last_seen) AS \"Última vez\" FROM isp.v_agg_src_dst_svc_1m_flat WHERE $__timeFilter(window_start) AND flow_dir = 'outbound' AND src_ip = toIPv6OrNull('$src_ip') GROUP BY dst_ip_str ORDER BY \"Paquetes\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:ip:A2', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
+                   "sortBy": [{ "displayName": "Paquetes", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
+                                                  "filterable": true, "inspect": false } }, "overrides": [] }
+    },
+    {
+      "id": 3, "type": "table", "title": "Top puertos / servicios",
+      "description": "A qué puertos le manda tráfico, y a cuántos destinos distintos por puerto -- la respuesta directa a \"a qué puertos\": un puerto con muchas IPs distintas es fan-out (scan/flood disperso), uno con pocas es un destino concentrado.",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT isp_svc_str(proto, dst_port) AS \"Servicio\", sum(packets) AS \"Paquetes\", round(sum(bytes) / 1e6, 2) AS \"MB\", uniqExact(dst_ip) AS \"IPs distintas\" FROM isp.v_agg_src_dst_svc_1m_flat WHERE $__timeFilter(window_start) AND flow_dir = 'outbound' AND src_ip = toIPv6OrNull('$src_ip') GROUP BY proto, dst_port ORDER BY \"Paquetes\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:ip:A3', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
+                   "sortBy": [{ "displayName": "Paquetes", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
+                                                  "filterable": true, "inspect": false } }, "overrides": [] }
+    },
+    {
+      "id": 4, "type": "table", "title": "Volumen por ventana de 10 s",
+      "description": "pps/bps recientes de esta fuente (isp.v_agg_src_10s, deliberadamente volumétrica -- E00b D-3) -- para ver si el flood sigue en curso ahora o ya paró.",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 15 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT window_start AS \"Ventana\", customer_id AS \"Cliente\", round(pps, 1) AS \"pps\", round(bps / 1e6, 2) AS \"Mbps\", packets AS \"Paquetes\", syn_only_packets AS \"SYN sin flags\" FROM isp.v_agg_src_10s WHERE $__timeFilter(window_start) AND flow_dir = 'outbound' AND src_ip = toIPv6OrNull('$src_ip') ORDER BY \"Ventana\" DESC LIMIT 200 SETTINGS log_comment = 'secisp:ip:A4', use_query_cache = 1, query_cache_ttl = 15"
+      }],
+      "options": { "showHeader": true, "footer": { "show": false, "reducer": ["count"], "fields": "" },
+                   "sortBy": [{ "displayName": "Ventana", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
+                                                  "filterable": true, "inspect": false } }, "overrides": [] }
+    },
+    {
+      "id": 5, "type": "table", "title": "Eventos de detección",
+      "description": "Qué detector vio esta IP, QUÉ ES en criollo (join contra isp.v_det_detectors), y con qué magnitud -- observado vs. umbral (method='threshold') o vs. baseline/sigma (method='baseline'). suppressed=1 significa que el motor lo vio pero no lo confirmó (shadow, o alguna de las diez razones de supresión de D7).",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 15 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT e.window_start AS \"Ventana\", e.attack_class AS \"Clase\", e.detector_id AS \"Detector\", d.description AS \"Qué es\", e.attack_subtype AS \"Subtipo\", e.method AS \"Método\", e.score AS \"Score\", round(e.ratio_adj, 2) AS \"Ratio ajustado\", round(e.observed_value, 2) AS \"Observado\", round(e.threshold_value, 2) AS \"Umbral\", round(e.baseline_value, 2) AS \"Baseline\", round(e.deviation_sigma, 1) AS \"Desvío (sigma)\", e.dst_kind AS \"dst_kind\", e.uniq_dst_ips AS \"IPs destino\", e.uniq_dst_ports AS \"Puertos destino\", e.suppressed AS \"Suprimido\", e.suppress_reason AS \"Motivo\" FROM isp.v_det_events AS e LEFT JOIN isp.v_det_detectors AS d ON e.detector_id = d.detector_id WHERE $__timeFilter(e.window_start) AND e.src_ip = toIPv6OrNull('$src_ip') ORDER BY \"Ventana\" DESC LIMIT 100 SETTINGS log_comment = 'secisp:ip:A5', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
+                   "sortBy": [{ "displayName": "Ventana", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
+                                                  "filterable": true, "inspect": false } }, "overrides": [] }
+    },
+    {
+      "id": 6, "type": "table", "title": "Casos",
+      "description": "Casos abiertos/cerrados de esta IP (isp.v_det_cases) -- el case_id de acá es el mismo que 30-forense.json usa como filtro, y el prefijo de 8 caracteres es el mismo cid8 que nombra las listas secisp_pair_src_<cid8> en el router.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT case_id AS \"case_id\", state AS \"Estado\", attack_class AS \"Clase\", peak_score AS \"Score pico\", detectors AS \"Detectores\", victim_count AS \"Víctimas\", opened_at AS \"Abierto\", last_event_at AS \"Último evento\" FROM isp.v_det_cases WHERE src_ip = toIPv6OrNull('$src_ip') ORDER BY last_event_at DESC LIMIT 50 SETTINGS log_comment = 'secisp:ip:A6', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
+                   "sortBy": [{ "displayName": "Último evento", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
+                                                  "filterable": true, "inspect": false } }, "overrides": [] }
+    },
+    {
+      "id": 7, "type": "table", "title": "Acciones de mitigación",
+      "description": "Qué escribió (o intentó escribir) el mitigador para esta IP (isp.v_mit_actions) -- status='ok' es una entrada real en el router, 'dry_run'/'skipped' no tocaron nada, ver skip_reason.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
+      "targets": [{
+        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
+        "rawSql": "SELECT created_at AS \"Cuándo\", detector_id AS \"Detector\", action AS \"Acción\", status AS \"Estado\", skip_reason AS \"Motivo de skip\", address_list AS \"Lista\", score AS \"Score\" FROM isp.v_mit_actions WHERE $__timeFilter(created_at) AND src_ip = toIPv6OrNull('$src_ip') ORDER BY \"Cuándo\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:ip:A7', use_query_cache = 1, query_cache_ttl = 30"
+      }],
+      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
+                   "sortBy": [{ "displayName": "Cuándo", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
+                                                  "filterable": true, "inspect": false } }, "overrides": [] }
+    }
+  ]
+}

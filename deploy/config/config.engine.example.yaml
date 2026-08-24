@@ -1,0 +1,120 @@
+# deploy/config/config.engine.example.yaml — sección `detect:` completa y cargable
+# del rol engine (T-181 · E05-T07).
+#
+# docs/specs/E05-motor-de-deteccion.md §4.12 (bloque detect:, overrides por
+# detector, params_hash) y §5.9 (las 34 SEC_DETECT_* -- 4 de E00 §4.5.3 más
+# las 30 nuevas de E05, ver internal/config/detect.go). D-29 (E00b) es la
+# decisión que borra los parámetros por familia: nada de esto se declara dos
+# veces con un default distinto por detector.
+#
+# Precedencia (E00 §4.5.3, ADR-003): flag > variable de entorno SEC_DETECT_*
+# > este archivo > default compilado (internal/config/detect.go,
+# DefaultDetectConfig). Los 34 valores de abajo son justamente esos
+# defaults: un config.yaml sin bloque `detect:` arranca igual, en modo
+# seguro. Este archivo está para copiar/pegar dentro de /etc/secisp/config.yaml
+# y editar puntualmente, no como un mínimo necesario.
+#
+# Forma del árbol YAML: `detect:` es PLANO (sin sub-bloques defaults:/
+# pending:/suppress: como sugiere el fragmento ilustrativo de E05 §4.12) y
+# `detectors:` es una clave de PRIMER NIVEL, hermana de `detect:`, no anidada
+# dentro de ella -- así lo exige el cargador núcleo ya construido
+# (internal/config/{config,load,strict,keys}.go, T-011/T-013): ver el
+# comentario de cabecera de internal/config/detect.go para el detalle.
+#
+# Clave desconocida en `detect:` o en un bloque `detectors.<id>:` == arranque
+# abortado, nombrando la clave y la línea (E00 §4.5.3 ADR-003 / E05 §4.12).
+
+detect:
+  # ── Scheduler y presupuesto general ──────────────────────────────────────
+  tick_seconds: 10                        # SEC_DETECT_TICK_SECONDS
+  window_grace_seconds: 15                # SEC_DETECT_WINDOW_GRACE_SECONDS — único grace del sistema
+  max_catchup_windows: 30                 # SEC_DETECT_MAX_CATCHUP_WINDOWS
+  max_concurrent_queries: 3               # SEC_DETECT_MAX_CONCURRENT_QUERIES
+  max_events_per_run: 5000                # SEC_DETECT_MAX_EVENTS_PER_RUN
+
+  # ── Revisita de ventanas ya evaluadas (datos tardíos) ────────────────────
+  revisit_windows: 5                      # SEC_DETECT_REVISIT_WINDOWS
+  revisit_min_delta_pct: 1.0              # SEC_DETECT_REVISIT_MIN_DELTA_PCT
+  revisit_max_evals: 3                    # SEC_DETECT_REVISIT_MAX_EVALS
+
+  # ── Cola de pendientes por replay del WAL (D-30) ─────────────────────────
+  pending_max_windows_per_tick: 3         # SEC_DETECT_PENDING_MAX_WINDOWS_PER_TICK
+  pending_max_windows: 5000               # SEC_DETECT_PENDING_MAX_WINDOWS — sin tope de catch-up (D-30)
+
+  # ── Presupuesto por default de cada query (Spec u override lo pisan) ─────
+  ingest_max_stale_seconds: 120           # SEC_DETECT_INGEST_MAX_STALE_SECONDS
+  query_timeout_seconds: 20               # SEC_DETECT_QUERY_TIMEOUT_SECONDS (T-378: 20, no 15 -- ver el "Gotcha resuelto" de internal/config/detect.go)
+  max_memory_bytes: 2147483648            # SEC_DETECT_MAX_MEMORY_BYTES
+  max_rows_read: 200000000                # SEC_DETECT_MAX_ROWS_READ
+  max_threads_per_query: 2                # SEC_DETECT_MAX_THREADS_PER_QUERY
+
+  # ── Circuit breaker por detector y warm-up del motor ─────────────────────
+  breaker_fails: 3                        # SEC_DETECT_BREAKER_FAILS
+  breaker_cooldown_seconds: 300           # SEC_DETECT_BREAKER_COOLDOWN_SECONDS
+  warmup_seconds: 300                     # SEC_DETECT_WARMUP_SECONDS — nada acciona tras arrancar el motor
+  maintenance: false                      # SEC_DETECT_MAINTENANCE — ventana de mantenimiento global, suprime todo
+
+  # ── Persistencia (racha de ventanas consecutivas) ────────────────────────
+  min_consecutive_default: 2              # SEC_DETECT_MIN_CONSECUTIVE_DEFAULT
+  streak_max_keys: 200000                 # SEC_DETECT_STREAK_MAX_KEYS
+  # SEC_DETECT_STREAK_GAP_TOLERANCE: E05 §5.9 lo lista con "(0)", pero §9 Q2
+  # (decidida el 2026-08-07) lo fija en 1 -- con active-timeout de 5 min y
+  # tolerancia 0 el detector de racha no acciona NUNCA, sin error visible.
+  # Gana Q2: el default compilado es 1, no 0.
+  streak_gap_tolerance: 1                 # SEC_DETECT_STREAK_GAP_TOLERANCE
+
+  # ── Supresión declarativa (det_suppress_rules) ───────────────────────────
+  suppress_reload_seconds: 60             # SEC_DETECT_SUPPRESS_RELOAD_SECONDS
+  suppress_max_rules: 200                 # SEC_DETECT_SUPPRESS_MAX_RULES
+  suppress_max_ttl_days: 365              # SEC_DETECT_SUPPRESS_MAX_TTL_DAYS
+
+  # ── Ingesta degradada (D-26 enmendada por C-3, etapa 3b acotada) ─────────
+  max_shed_ratio: 0.20                    # SEC_DETECT_MAX_SHED_RATIO
+
+  # ── Baseline y correlación híbrida (E09) ─────────────────────────────────
+  baseline_veto_enabled: true             # SEC_DETECT_BASELINE_VETO_ENABLED
+  hybrid_enabled: true                    # SEC_DETECT_HYBRID_ENABLED
+
+  # ── Gestor de casos ───────────────────────────────────────────────────────
+  case_idle_seconds: 900                  # SEC_DETECT_CASE_IDLE_SECONDS
+  case_sync_seconds: 30                   # SEC_DETECT_CASE_SYNC_SECONDS
+  case_reopen_seconds: 1800               # SEC_DETECT_CASE_REOPEN_SECONDS
+  case_stuck_seconds: 600                 # SEC_DETECT_CASE_STUCK_SECONDS
+  max_live_cases: 50000                   # SEC_DETECT_MAX_LIVE_CASES
+
+  # engine_instance: ""                   # SEC_DETECT_ENGINE_INSTANCE — default: hostname, se deja sin fijar
+
+# ── Override por detector, sin recompilar (E05 §4.12) ───────────────────────
+# El default de TODO detector nuevo es `shadow` (arranque en modo seguro,
+# ADR-011): no hace falta declarar acá los que se dejan en el default. Los
+# overrides soportados son EXACTAMENTE mode, grace_seconds,
+# query_timeout_seconds, max_memory_bytes, max_rows_read, max_catchup_windows,
+# min_consecutive_windows y params -- ninguna otra clave, y "params.<x>" tiene
+# que existir en el Spec del detector con el mismo tipo y dentro de su rango
+# (internal/config/detect.go, DecodeDetectorOverrides). Los umbrales propios
+# de cada familia (scan/smtp/ddos/anomaly) NO van acá: viven en el Spec del
+# detector, en código (D-29).
+detectors:
+  scan.horizontal:
+    mode: shadow
+    min_consecutive_windows: 2
+    grace_seconds: 15                  # override del Spec.Window.Grace
+    query_timeout_seconds: 15          # override del Spec.QueryTimeout
+    max_memory_bytes: 2147483648       # override del Spec.MaxMemoryBytes
+    params:
+      min_uniq_dst: 300
+      min_uniq_dst_floor: 20
+      max_pkts_per_dst: 10.0
+      max_rows: 2000
+  scan.sweep_slow:
+    mode: shadow
+    # Window.Length = 15m viene del Spec; acá solo se overridea lo operativo.
+    max_catchup_windows: 30
+  smtp.small_session:
+    mode: shadow
+    query_timeout_seconds: 30
+    max_memory_bytes: 4294967296
+  ddos.src_flood:
+    mode: shadow
+    params:
+      min_pps: 10000

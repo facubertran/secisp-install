@@ -1,0 +1,46 @@
+# Unidad systemd del rol watchdog de secisp (T-035 · E12a-T03).
+# Análoga a secisp-collector.service (E12 §4.3): mismo hardening y Type=notify.
+# Corre lo que Prometheus no puede scrapear por su cuenta (D3) y manda el
+# heartbeat al dead-man's switch externo (D4).
+#
+# LoadCredential= agregado en T-393 (E12b-T32, ola 11): el check "routers"
+# (T-314/T-315) lee la MISMA routers.yaml que el mitigador para hacer
+# GET /rest/system/resource con Basic Auth -- antes de esta task la leía
+# directo de /etc/secisp/routers.yaml, sin el tmpfs privado que
+# secisp-mitigator.service ya usaba, o sea la misma credencial de router
+# expuesta a un proceso adicional sin la protección de LoadCredential=. Mismo
+# name de credential ("routers") que secisp-mitigator.service a propósito:
+# cmd/secisp/watchdog.go y cmd/secisp/mitigator.go resuelven la ruta con la
+# misma internal/ops/secops.ResolveCredentialPath.
+[Unit]
+Description=secisp watchdog (checks que Prometheus no puede scrapear)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=secisp
+Group=secisp
+ExecStart=/usr/local/bin/secisp watchdog --config /etc/secisp/config.yaml
+Environment=SEC_ROLE=watchdog
+Environment=SEC_METRICS_ADDR=127.0.0.1:9104
+EnvironmentFile=-/etc/secisp/watchdog.env
+
+LoadCredential=routers:/etc/secisp/routers.yaml
+Environment=SEC_MIT_ROUTERS_PATH=%d/routers
+
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/secisp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+Restart=always
+RestartSec=2
+# KillSignal por defecto (SIGTERM):
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

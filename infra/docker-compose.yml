@@ -1,0 +1,300 @@
+# infra/docker-compose.yml
+#
+# T-034 (E12a-T02) -- E12 §4.1, §4.2.3, §5.7.2, §3 D1, §1.1, §1.2i, §1.2k.
+#
+# Infraestructura CON ESTADO del despliegue de un solo host (E12 §3 D1):
+# ClickHouse, Prometheus, Grafana, Alertmanager y node-exporter. Los cuatro
+# roles de `secisp` (collector/engine/mitigator/watchdog) NO van acá: corren
+# como unidades systemd nativas sobre el host (deploy/systemd/, T-035) y hablan
+# con estos contenedores por loopback -- es la Decisión D1 de E12 §3, con las
+# tres razones duras (UDP a alta tasa por docker-proxy, SO_RCVBUF/rmem_max no
+# namespaceado, binario estático sin runtime).
+#
+# Ninguna red `external` se crea a mano (E12 §3 D1: es el primer FAIL del
+# `preinstall-check.sh` del prototipo, con dos compose que compartían una red
+# creada con `docker network create`): todo lo que necesita red de contenedor
+# usa la red default que `docker compose` crea sola.
+#
+# Prometheus y node-exporter corren con `network_mode: host` (E12 §4.1: "network_
+# mode host o host-gateway") porque tienen que alcanzar 127.0.0.1:9101-9104 (los
+# cuatro roles, que son procesos nativos del host) y node-exporter tiene que medir
+# el host real, no un netns de contenedor. Es la opción que hace que los targets
+# de prometheus.yml (127.0.0.1) sean literales. Solo funciona en Linux, que es la
+# única plataforma de despliegue (E12 §3 D1).
+#
+# Ninguna superficie de métricas queda expuesta fuera de loopback (E12 §4.1):
+# todo `ports:` de este archivo arranca con `127.0.0.1:`, y los servicios en
+# `network_mode: host` fijan `--web.listen-address=127.0.0.1:...` (o el
+# equivalente GF_SERVER_HTTP_ADDR de Grafana) a mano, porque host networking
+# no lo hace por sí solo.
+#
+# EXCEPCIÓN DELIBERADA: el puerto nativo 9000 de clickhouse (línea de
+# `ports:` de ese servicio, abajo) se abrió a 0.0.0.0 a pedido explícito del
+# operador, para poder correr consultas de análisis directas desde fuera del
+# host -- perimetral asegurado por su cuenta, fuera del alcance de este
+# repo. Antes de este cambio, docs/ops/roles-y-grants.md ya documentaba el
+# procedimiento obligatorio para este escenario ("rotación obligatoria post-
+# instalación... antes de exponer ClickHouse más allá de 127.0.0.1"): las
+# CINCO CREATE USER de 95_roles_grants.sql llevan contraseña placeholder
+# pública (CHANGE_ME_*, en texto plano en este repo), y 'default' (arriba,
+# CLICKHOUSE_PASSWORD) queda con la suya propia sin rotar -- las seis
+# tienen que rotarse ANTES de que este puerto quede accesible desde fuera
+# del host, no después. secisp_ops (rol secisp_ro: las 47 vistas isp.v_*)
+# es el usuario pensado para consultas de análisis ad-hoc como esta.
+#
+# Grafana TAMBIÉN corre con `network_mode: host` (no solo Prometheus/node-
+# exporter): sus paneles de "calidad de detección" (E10) leen métricas de
+# Prometheus, que bindea 127.0.0.1:9090 -- un netns de bridge nunca alcanza un
+# 127.0.0.1 ajeno (no es un problema de DNS ni de reglas de firewall: un
+# socket bindeado a 127.0.0.1 solo acepta conexiones que se originan en ESE
+# mismo netns), así que la única forma de que Grafana llegue a Prometheus (o a
+# los cuatro roles nativos en 9101-9104, si algún panel futuro los grafica
+# directo) es compartiendo el netns del host, igual que Prometheus ya
+# comparte el suyo para llegar a esos mismos puertos. GF_SERVER_HTTP_ADDR=
+# 127.0.0.1 reemplaza al `ports:` que host networking hace incompatible
+# (Compose lo ignora con host networking) y mantiene la regla de loopback-
+# only server-side, en vez de depender del bind interno + mapeo de puertos.
+#
+# Ese mismo salto de red implica que Grafana deja la red default de compose
+# (`network_mode: host` es mutuamente excluyente con estar en una red de
+# bridge) y ya no puede alcanzar a ClickHouse por nombre de servicio
+# (`http://clickhouse:8123`) -- por eso 8123 SÍ se publica ahora, a
+# 127.0.0.1:8123 nada más (línea de `ports:` de clickhouse, de abajo):
+# Grafana la alcanza por loopback igual que al resto.
+
+x-logging: &default-logging
+  # E12 §1.1: "El anchor de rotación de logs de Docker, con su causa raíz
+  # documentada ... los logs JSON de Docker crecen sin tope. Aplica a los cinco
+  # servicios (criterio de aceptación de T-034).
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  clickhouse:
+    # LTS >= 24.8, fijada por tag (no `latest`): E12 §5.7.2 exige la cláusula
+    # SQL SECURITY DEFINER (desde 24.4) para las vistas que leen system.* sin
+    # otorgarle esa superficie a secisp_ro/secisp_grafana. Ver notes de T-034:
+    # ninguna spec fija el patch exacto, se pinea el minor.
+    image: clickhouse/clickhouse-server:24.8
+    container_name: secisp-clickhouse
+    restart: unless-stopped
+    environment:
+      # Sin esto, el entrypoint oficial NO crea la base "isp" en el primer
+      # arranque (data dir vacío): el protocolo nativo exige que la base del
+      # DSN de conexión ya exista al hacer el handshake -- a diferencia del
+      # HTTP interface, no alcanza con conectar y correr CREATE DATABASE. El
+      # síntoma real: `secisp schema apply` (SEC_CH_DSN por default apunta a
+      # .../isp, cmd/secisp/schema.go) falla en el primer archivo del layout
+      # (00_database.sql, que es justamente el que crea "isp") con "code: 81,
+      # Database isp does not exist" -- nunca llega a correr el CREATE
+      # DATABASE porque la conexión ya se cae antes. .github/workflows/ci.yml
+      # ya fija esto (`CLICKHOUSE_DB: isp` en el servicio del job
+      # clickhouse-integration); este compose de producción no lo tenía.
+      CLICKHOUSE_DB: isp
+      # Sin esto, el entrypoint oficial escribe users.d/default-user.xml
+      # restringiendo 'default' a <networks><ip>127.0.0.1</ip></networks> --
+      # una conexión real desde el host contra el puerto publicado NO llega
+      # con esa IP de origen (NAT de "docker-proxy"/iptables), así que
+      # cualquier secisp nativo (schema apply, doctor, los cuatro roles)
+      # se queda afuera con "Authentication failed" hasta que se fija una
+      # contraseña acá -- mismo mecanismo que GF_ADMIN_PASSWORD más abajo,
+      # override real en infra/.env (no versionado), nunca en este archivo.
+      # "-" (no ":-"): CLICKHOUSE_DEFAULT_PASSWORD="" (vacío, SETEADO) tiene
+      # que distinguirse de "no seteado" -- deploy/clickhouse/08_dict.sql (y
+      # las demás CREATE DICTIONARY del layout) conectan su SOURCE(CLICKHOUSE(
+      # ...)) interno como 'default' SIN pasar contraseña (gap real, no
+      # arreglado en esta ola: exigiría un usuario/rol nuevo con su propio
+      # placeholder CHANGE_ME_* como los cinco de 95_roles_grants.sql, tocando
+      # cada CREATE DICTIONARY del layout) -- con 'default' password-protegido,
+      # CADA dictGet()/SYSTEM RELOAD DICTIONARY aborta con "Authentication
+      # failed", lo que en la práctica le impide arrancar al motor entero
+      # (SEC-DET-005, verificación 5 de contrato). Vacío explícito acá es la
+      # forma de dejar 'default' sin contraseña a propósito para probar contra
+      # un ClickHouse real -- el puerto nativo sigue publicado solo a
+      # 127.0.0.1 (línea de `ports:` de abajo), así que el radio de exposición
+      # de un 'default' sin contraseña queda acotado a este mismo host.
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_DEFAULT_PASSWORD-change-me-before-going-live}"
+      # 94b_profile_panel.sql (CREATE SETTINGS PROFILE/QUOTA) y
+      # 95_roles_grants.sql (CREATE USER/ROLE) necesitan que 'default'
+      # pueda administrar el control de acceso -- sin esto, el entrypoint
+      # genera default-user.xml con access_management=0 a propósito (ver
+      # su propio /entrypoint.sh) y `secisp schema apply` se corta a mitad
+      # de camino con "Not enough privileges... CREATE SETTINGS PROFILE".
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    ports:
+      # 0.0.0.0 a pedido explícito del operador (ver el comentario de
+      # cabecera del archivo, "EXCEPCIÓN DELIBERADA") -- las seis
+      # contraseñas (secisp_collector/engine/mitigator/ops/grafana +
+      # default) tienen que estar rotadas ANTES de que esto llegue a un
+      # host real con este puerto alcanzable desde fuera.
+      - "0.0.0.0:9000:9000" # protocolo nativo: collector/engine/mitigator/watchdog (loopback) + consultas externas de análisis
+      - "127.0.0.1:9363:9363" # /metrics (habilitado por config.d/prometheus-metrics.xml)
+      # 8123 (HTTP): publicado a loopback nada más -- Grafana corre con
+      # `network_mode: host` (ver el comentario de cabecera del archivo,
+      # "Grafana TAMBIÉN corre con network_mode: host") y ya no puede
+      # alcanzar `http://clickhouse:8123` por nombre de servicio de la red
+      # default de compose, así que necesita esta puerta igual que 9000.
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      # Archivos SUELTOS dentro de config.d, uno por uno (criterio de aceptación
+      # de T-034 y trampa de E12 §1.1): montar la carpeta entera tapa el
+      # docker_related_config.xml que la propia imagen deja ahí y ClickHouse
+      # queda escuchando solo en localhost.
+      - ./clickhouse/config.d/system-logs-retention.xml:/etc/clickhouse-server/config.d/system-logs-retention.xml:ro
+      - ./clickhouse/config.d/prometheus-metrics.xml:/etc/clickhouse-server/config.d/prometheus-metrics.xml:ro
+    logging: *default-logging
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: secisp-prometheus
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=5GB # tope de E12 §4.2.3: "Prometheus TSDB (30 d, tope 5 GB)"
+      - --web.listen-address=127.0.0.1:9090 # network_mode host no restringe a loopback por sí solo
+    logging: *default-logging
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: secisp-node-exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --web.listen-address=127.0.0.1:9100
+    logging: *default-logging
+
+  grafana:
+    # E10 §D1 fija esta misma versión base (grafana/grafana:11.6.0). E10
+    # §4.10.2 documenta un Dockerfile propio que agrega el plugin vía COPY,
+    # pero ese Dockerfile nunca se construyó (E10 no lo entregó todavía) --
+    # mientras tanto, GF_INSTALL_PLUGINS de abajo instala el mismo plugin en
+    # la imagen oficial sin modificarla: el entrypoint stock de Grafana ya
+    # sabe leer esa variable, no hace falta un Dockerfile solo para esto.
+    image: grafana/grafana:11.6.0
+    container_name: secisp-grafana
+    restart: unless-stopped
+    # network_mode: host (no `ports:`, incompatible con host networking): ver
+    # el comentario de cabecera del archivo, "Grafana TAMBIÉN corre con
+    # network_mode: host" -- sin esto, el panel de calidad de detección (E10)
+    # nunca alcanza a Prometheus (127.0.0.1:9090, otro netns), connection
+    # refused siempre, sin importar qué URL tenga el datasource.
+    network_mode: host
+    environment:
+      # E12 §4.17: "Panel público accidental" -> GF_AUTH_ANONYMOUS_ENABLED=false,
+      # admin con password del vault. El default de abajo es SOLO para que
+      # `docker compose up -d` levante sin configuración previa (criterio de
+      # aceptación de T-034); cambiarlo en infra/.env (no versionado) antes de
+      # exponer Grafana a nadie más que al operador.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ADMIN_PASSWORD: "${GF_ADMIN_PASSWORD:-change-me-before-going-live}"
+      # E10 §4.10.2: el plugin oficial de ClickHouse, versión exacta (D1 --
+      # nunca sin pin, nunca `git clone`). El entrypoint de la imagen stock
+      # lo instala solo antes de arrancar Grafana.
+      GF_INSTALL_PLUGINS: "grafana-clickhouse-datasource 4.9.0"
+      # E10 §4.10.2: impide que un dashboard quede refrescando cada segundo.
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: "10s"
+      # Provisioning/datasources/secisp.yml expande esta variable con
+      # ${SEC_PANEL_CH_PASSWORD} para la password del usuario secisp_grafana
+      # de ClickHouse -- override real en infra/.env (no versionado), tiene
+      # que coincidir con el ALTER USER que reemplaza el placeholder
+      # CHANGE_ME_secisp_grafana_password de 95_roles_grants.sql.
+      SEC_PANEL_CH_PASSWORD: "${SEC_PANEL_CH_PASSWORD:-change-me-before-going-live}"
+      # Reemplaza al `ports: ["127.0.0.1:3000:3000"]` que host networking
+      # vuelve inerte: sin esto Grafana bindea 0.0.0.0:3000 en la red REAL
+      # del host (no un netns de contenedor). Loopback-only por default
+      # (E12 §4.1) -- un operador que necesite exponerlo más allá de este
+      # host (LAN, internet) lo hace en infra/docker-compose.override.yml
+      # (gitignored, Compose lo mergea solo si existe), nunca acá: ese es un
+      # cambio de postura de seguridad puntual de UN despliegue, no un
+      # default que todo clone de este repo tenga que heredar.
+      GF_SERVER_HTTP_ADDR: "127.0.0.1"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # Relativo a ESTE archivo (infra/), no al repo: en producción
+      # docker-compose.yml vive solo en /opt/secisp/infra/ (deploy/install.sh
+      # lo copia ahí sin ningún deploy/ hermano), así que un path tipo
+      # ../deploy/grafana/... resolvería a /opt/secisp/deploy/grafana/..., que
+      # no existe -- Docker crea ahí un directorio vacío en silencio y monta
+      # ESO, que es exactamente por qué Grafana arrancaba sin ningún
+      # dashboard (encontrado en la primera instalación end-to-end real).
+      # install.sh es quien puebla ./grafana/{provisioning,dashboards/secisp}
+      # bajo /opt/secisp/infra/ a partir de deploy/grafana/ del repo.
+      #
+      # Montar las DOS subcarpetas puntuales, no /etc/grafana/provisioning
+      # entero: un bind mount reemplaza el directorio completo, así que
+      # montar el padre tapa también las subcarpetas que la imagen stock trae
+      # vacías por default (plugins/, alerting/) -- Grafana logueaba
+      # "Failed to read plugin provisioning files ... no such file or
+      # directory" para provisioning/plugins/ por esto mismo, aunque
+      # secisp no provisiona nada ahí.
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards/secisp:/var/lib/grafana/dashboards/secisp:ro
+    logging: *default-logging
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: secisp-alertmanager
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - alertmanager_data:/alertmanager
+      - ./alertmanager:/etc/alertmanager/secisp:ro
+    # T-319 (E12a-T25): el paso que T-034 dejó pendiente ("el paso que falta
+    # es un command: [...]") -- infra/alertmanager/alertmanager.yml ya
+    # existe, así que el contenedor deja de arrancar con el
+    # alertmanager.yml de ejemplo que trae la imagen.
+    command:
+      - --config.file=/etc/alertmanager/secisp/alertmanager.yml
+      - --storage.path=/alertmanager
+    # El token de Telegram NUNCA va en infra/alertmanager/ (esa carpeta se
+    # versiona entera, read-only): Docker Compose lo monta desde un archivo
+    # fuera del repo (infra/secrets/telegram_bot_token, gitignored) a
+    # /run/secrets/telegram_bot_token -- el mismo mecanismo que
+    # alertmanager.yml referencia como bot_token_file. Crear ese archivo es
+    # un paso de instalación (deploy/systemd/secisp-alertmanager-
+    # credentials.md), no algo que este compose pueda hacer por el operador.
+    secrets:
+      - telegram_bot_token
+    logging: *default-logging
+
+volumes:
+  clickhouse_data:
+  clickhouse_logs:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+
+secrets:
+  # T-319 (E12a-T25): archivo en el host, NUNCA versionado (.gitignore),
+  # que el operador crea en la instalación -- ver deploy/systemd/
+  # secisp-alertmanager-credentials.md. Docker Compose falla al arrancar
+  # si el archivo no existe, que es la señal correcta de "falta un paso
+  # de instalación" en vez de un contenedor que arranca con Telegram roto
+  # en silencio.
+  telegram_bot_token:
+    file: ./secrets/telegram_bot_token

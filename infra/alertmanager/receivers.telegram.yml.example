@@ -1,0 +1,57 @@
+# infra/alertmanager/receivers.telegram.yml.example
+#
+# T-319 (E12a-T25, ola 8) -- referencia AISLADA del bloque `telegram_configs`
+# que infra/alertmanager/alertmanager.yml usa en sus dos receivers (noc,
+# noc-urgente). No es un archivo que Alertmanager lea directo (no hay
+# `-config.file` que apunte acá): es documentación copiable para quien
+# necesite entender o ajustar el bloque sin leer el alertmanager.yml
+# completo -- mismo rol que deploy/config/routers.yaml.example cumple para
+# routers.yaml.
+#
+# Los dos campos que importan para no repetir el bug del prototipo (D1,
+# E12 §3: "la lección no era 'no usar Telegram', era 'no versionar el
+# token'"):
+#
+#   bot_token_file  Ruta a un archivo QUE CONTIENE SOLO EL TOKEN, una línea,
+#                    sin comillas, sin "TELEGRAM_TOKEN=" delante -- ese
+#                    prefijo con comillas es EXACTAMENTE el bug de
+#                    env_file que el prototipo documentó. Alertmanager lee
+#                    el archivo entero (trim de whitespace) como el token.
+#                    NUNCA bot_token (el campo hermano que acepta el
+#                    string del token directo en el YAML): ese SÍ
+#                    versionaría el secreto.
+#
+#   chat_id          NO es secreto -- es un identificador numérico del
+#                     chat/canal/grupo de Telegram (get vía @userinfobot o
+#                     @RawDataBot), seguro de tener en un archivo
+#                     versionado. Sin este campo, message no tiene adónde
+#                     ir.
+#
+# Cómo conseguir bot_token/chat_id -- procedimiento de una vez, por
+# instalación:
+#
+#   1. Hablar con @BotFather en Telegram, /newbot, guardar el token que
+#      devuelve (formato 123456789:AAal9uh...).
+#   2. Crear (o reusar) el grupo/canal de Telegram del operador, agregar
+#      el bot como miembro/admin.
+#   3. Mandar cualquier mensaje al grupo, después GET
+#      https://api.telegram.org/bot<TOKEN>/getUpdates -- el campo
+#      "chat":{"id": ...} de la respuesta es el chat_id.
+#   4. Escribir el token (SOLO el token, una línea) en
+#      infra/secrets/telegram_bot_token (0600) -- ver
+#      deploy/systemd/secisp-alertmanager-credentials.md para el detalle
+#      completo de permisos/instalación.
+#   5. Reemplazar el chat_id CHANGE_ME de infra/alertmanager/alertmanager.yml
+#      (los dos receivers, noc y noc-urgente) por el valor real del paso 3.
+
+telegram_configs:
+  - bot_token_file: /run/secrets/telegram_bot_token
+    chat_id: -1001234567890 # CHANGE_ME (ver el procedimiento de arriba)
+    parse_mode: "HTML"
+    message: >-
+      <b>[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}</b>
+      ({{ .CommonLabels.component }}, {{ .CommonLabels.severity }})
+      {{ range .Alerts }}
+      {{ .Annotations.summary }}
+      {{ .Annotations.runbook_url }}
+      {{ end }}

@@ -1,0 +1,60 @@
+# exporters.yaml — inventario declarativo de exportadores de flujos.
+#
+# Esquema único, fijado por E00b D-16 (docs/specs/E04-enriquecimiento-y-configuracion.md
+# §4.11). Un exportador es UN equipo con una o más direcciones (addresses):
+# el caso real que este esquema tiene que cubrir es un router que exporta
+# tanto desde su loopback como desde una interfaz física.
+#
+# Validado con: secisp config validate --exporters exporters.yaml
+# Aplicado con: secisp config apply --exporters exporters.yaml --reason "..."
+
+version: 1
+
+# Se aplican a todo exportador que no los declare explícitamente.
+defaults:
+  sampling_override: 0          # 0 = sin override; se usa la escalera de sampling (E00 §4.2.2)
+  seq_mode: auto                # auto | datagram | record
+  enabled: true
+  expect_tcp_flags: true
+  expect_if_direction: false
+  expect_ipv6: true
+  active_timeout_seconds: 60
+  inactive_timeout_seconds: 15
+  mitigation_enabled: false
+
+exporters:
+  # ── Identidad (base de E01 §5.5) ─────────────────────────────────────────
+  - id: rtr-borde-1             # → flows_raw.exporter_id. Único. NO puede empezar con 'ip:'
+    addresses:                  # TODAS las IPs desde las que exporta este equipo
+      - 203.0.113.1              #   loopback
+      - 2001:db8::1               #   la misma caja, por v6
+    sampling_override: 0        # se usa SOLO si no informa el rate in-band
+    seq_mode: record             # la secuencia cuenta REGISTROS, no datagramas
+    enabled: true
+    notes: "CCR2216 RouterOS 7.14, IPFIX a :2055"
+
+    # ── Inventario y operación ──────────────────────────────────────────────
+    hostname: br1.bsas
+    site: bsas-centro
+    vendor: mikrotik
+    os_version: "7.14.3"
+    role: border                # unknown|border|core|access|cgnat|bng
+    active_timeout_seconds: 30  # entra en el presupuesto de MTTD (E00 §1.4)
+    inactive_timeout_seconds: 15
+    expect_tcp_flags: true      # se contrasta con lo observado (§4.6.2)
+    expect_if_direction: true
+    expect_ipv6: true
+    mitigation_enabled: true    # ¿E11 aplica address-lists acá? Distinto de "exporta"
+    ifaces:
+      - { if_index: 1, if_name: sfp-plus1, if_role: upstream, speed_bps: 10000000000 }
+      - { if_index: 12, if_name: bridge-lan, if_role: internal }
+
+  # ── Overrides por observation domain (base de E01 §5.5) ──────────────────
+  - id: bng-1
+    addresses: [203.0.113.2]
+    role: bng
+    sampling_override: 100      # muestrea 1:100 y NO lo informa en banda
+    obs_domains:                # el dominio 7 muestrea distinto que el resto
+      - { id: 0, sampling_override: 100 }
+      - { id: 7, sampling_override: 1 }   # 1 = declara explícitamente que NO muestrea
+    mitigation_enabled: false

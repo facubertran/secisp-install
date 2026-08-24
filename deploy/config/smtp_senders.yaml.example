@@ -1,0 +1,98 @@
+# /etc/secisp/smtp_senders.yaml.example — bootstrap por archivo de
+# isp.dim_smtp_senders (T-070 · E07-T03 · E07 §5.3, D8).
+#
+# El instalador NO siembra esta tabla (a diferencia de dim_amp_ports, que
+# trae una semilla fija en 31_dim_amp_ports.sql): la lista de MTAs de
+# cliente es propia de cada ISP, así que se carga desde este archivo al
+# arrancar `secisp engine`, y SOLO si la tabla está todavía vacía
+# (internal/detect/smtp.LoadIfEmpty). Con la tabla ya poblada -- por este
+# archivo en un arranque previo, o a mano por SQL -- el archivo se ignora y
+# el arranque lo deja registrado en el log; no hay reconciliación continua
+# como la que E04 sí hace con prefixes.yaml/exporters.yaml.
+#
+# Copiar a /etc/secisp/smtp_senders.yaml y editar. Un archivo ausente, o
+# presente pero con `smtp_senders: []`, es una instalación válida sin ningún
+# MTA declarado: SenderRegistry (E07 §4.11) arranca con el trie vacío y todo
+# origen se evalúa contra los defaults globales del detector
+# (SEC_DETECT_SMTP_*).
+#
+# ADVERTENCIA (D8, Trampa de T-070): esto NO es una allowlist. Un MTA
+# declarado acá se sigue vigilando exactamente igual que cualquier otro
+# origen -- lo único que cambia es el techo (max_sessions_per_hour,
+# max_dst_fanout_per_hour) y que, si el origen lo rompe por encima de
+# escalation_factor veces, el evento sale IGUAL, con suppressed=0 y
+# attack_subtype='declared_sender_breach'. Un MTA declarado que además está
+# comprometido es el peor caso posible: no puede ser el único invisible. Si
+# lo que se necesita es una excepción binaria de verdad (resolver
+# autorizado, crawler, pentest, monitoreo, CGNAT, falso positivo confirmado),
+# eso va en isp.det_suppress_rules (E00b D-28), no acá.
+#
+# Campos por elemento de smtp_senders (todos menos `prefix` son opcionales;
+# el valor entre paréntesis es el DEFAULT si se omite la clave):
+#
+#   prefix                   Obligatorio. IPv4 ("a.b.c.d" o "a.b.c.d/L") o
+#                            IPv6 ("p" o "p/L"); un host sin "/" es /32 o
+#                            /128 según la familia. Se normaliza a la forma
+#                            IPv4-mapped canónica que guarda la tabla
+#                            (::ffff:a.b.c.d/(96+L)); si trae bits de host
+#                            distintos de cero (p.ej. "203.0.113.5/24" en vez
+#                            de ".0/24"), se enmascara y el arranque lo
+#                            loguea como warning, no lo rechaza.
+#   customer_id              (""). Identidad estable del abonado.
+#   is_mta                   (true). false = el prefijo participa igual del
+#                            resto de la fila (techos, escalation_factor)
+#                            pero no se marca como MTA conocido.
+#   port25_allowed           (false). true = exceptuado de la política de
+#                            bloqueo de puerto 25 saliente (E07 §4.8).
+#   max_sessions_per_hour    (0 = usar el default global del detector,
+#                            SEC_DETECT_SMTP_VOLUME_SESSIONS).
+#   max_dst_fanout_per_hour  (0 = usar el default global del detector,
+#                            SEC_DETECT_SMTP_FANOUT_MTA_DST).
+#   escalation_factor        (10.0). Múltiplo del techo a partir del cual el
+#                            evento se emite igual, sin suprimir (D8).
+#   label                    (""). Texto libre para el humano y el panel.
+#   owner                    (""). Quién es responsable de la fila.
+#   ticket                   (""). Referencia al ticket que autorizó el alta.
+#   valid_until              (sin vencimiento). RFC 3339 UTC, p.ej.
+#                            "2027-01-01T00:00:00Z". Una fila vencida deja de
+#                            aplicar pero NO se borra: queda como histórico
+#                            auditable (E07 §5.3).
+#   is_enabled               (true). false = deshabilitada sin borrarla.
+#
+# Toda alta que este archivo produzca queda en isp.ops_audit con
+# actor_source='file' (E04 §4.10 / E12 §5.4).
+
+smtp_senders:
+  # MX primario de un cliente con tráfico de entrega alto y conocido: sube
+  # el techo bastante por encima del default global, pero sigue vigilado.
+  - prefix: 203.0.113.10/32
+    customer_id: acme-srl
+    is_mta: true
+    port25_allowed: true
+    max_sessions_per_hour: 800
+    max_dst_fanout_per_hour: 400
+    owner: noc
+    ticket: "NOC-1421"
+    valid_until: "2027-01-01T00:00:00Z"
+    label: "MX de Acme SRL, verificado 2026-08"
+
+  # Bloque /28 completo de un cliente con varios MSA de salida (autenticados,
+  # puerto 587): un solo techo compartido para todo el bloque.
+  - prefix: 198.51.100.0/28
+    customer_id: hosting-beta
+    is_mta: true
+    max_sessions_per_hour: 300
+    max_dst_fanout_per_hour: 150
+    escalation_factor: 6.0
+    owner: noc
+    ticket: "NOC-1508"
+    label: "Pool de MSA salientes de Hosting Beta"
+
+  # Excepción de puerto 25 sin techo elevado: el cliente corre un MTA chico
+  # y solo necesita salir por 25 hacia relays externos.
+  - prefix: 2001:db8:100::/48
+    customer_id: colo-gamma
+    port25_allowed: true
+    owner: noc
+    ticket: "NOC-1552"
+    label: "Colo Gamma -- MTA IPv6 de bajo volumen"

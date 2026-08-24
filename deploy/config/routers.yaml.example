@@ -1,0 +1,122 @@
+# /etc/secisp/routers.yaml.example — esquema de referencia de T-276 (E11-T04,
+# E11 §4.13, §5.5, §5.7 Q6): credenciales y endpoints de los routers RouterOS que
+# `secisp mitigator` administra.
+#
+# A DIFERENCIA de los demás *.example de este directorio, deploy/install.sh NO
+# instala este archivo como routers.yaml (ver "routers.yaml: el instalador NO lo
+# crea" en deploy/install.sh): es secreto, lo trae el operador. Este archivo es solo
+# el esquema documentado para copiar a mano a /etc/secisp/routers.yaml, con
+# `chmod 0600 root:secisp` -- el instalador ABORTA si ya existe con permisos más
+# laxos que 0600 (E12 §4.4), y `internal/mitigate/routeros.Registry` lo recarga en
+# caliente por mtime cada vez que se edita, sin reiniciar el mitigador (E11-18).
+#
+# Claves desconocidas (a nivel router o dentro de tls:) hacen fallar la carga
+# (decodificación estricta, E00 §4.5.3): no hay caída silenciosa a un default.
+#
+# Campos por router (todos obligatorios salvo los marcados opcional):
+#
+#   name             Clave estable; es el label 'router' de las métricas
+#                    (sec_mit_router_up{router=...}) y del comment de trazabilidad.
+#   host             IP o nombre de gestión del router.
+#   port             Puerto del servicio www-ssl (443 típico) donde escucha la REST
+#                    API. NUNCA 8728/8729: esos son la API binaria, descartada por
+#                    D3 (E11 §3).
+#   username         Usuario RouterOS dedicado (Q6: NO 'admin'; grupo mínimo
+#                    api,write sobre /ip/firewall/address-list y lectura sobre
+#                    /ip/firewall/filter para SEC-MIT-009).
+#   password_env     Nombre de la variable de entorno que trae la contraseña
+#                    (convención: SEC_MIT_PW_<NAME EN MAYÚSCULAS>). Preferido sobre
+#                    `password:` (desaconsejado, literal en el archivo). Sin ninguno
+#                    de los dos -- o con password_env apuntando a una variable no
+#                    seteada -- el router queda deshabilitado (Enabled=false,
+#                    DisabledReason=missing_credential) sin invalidar el resto del
+#                    archivo: el mitigador sigue operando con los routers que sí
+#                    tienen contraseña.
+#   password         Opcional, desaconsejado. Contraseña literal; solo se usa si
+#                    password_env está vacío.
+#   tls.mode         verify | pin. "insecure" NO es un valor válido acá (T-393,
+#                    E12 §4.17): la verificación deshabilitada se activa SOLO con
+#                    la variable de entorno SEC_MIT_TLS_INSECURE=true del proceso
+#                    mitigator (nunca en este archivo) -- fuerza TLS.Mode=insecure
+#                    en TODOS los routers, emite SEC-MIT-013 1x/60s y marca
+#                    details.tls_insecure=1 en cada fila de auditoría. Decisión
+#                    deliberada: forzar TLS inseguro es un interruptor operativo
+#                    por sesión de proceso (laboratorio), no un valor que este
+#                    archivo -- versionado a mano, potencialmente por meses --
+#                    pueda dejar encendido sin que nadie lo note.
+#   tls.ca_file      Opcional para tls.mode=verify. CA propia (PEM) para importar
+#                    el certificado autofirmado del router a un truststore propio
+#                    en vez del truststore del sistema. Si se omite en una entrada
+#                    puntual, cae al default de proceso SEC_MIT_ROUTER_CA_FILE (si
+#                    está seteada); si tampoco hay default, se verifica contra el
+#                    truststore del sistema. Para importar el certificado: sacarlo
+#                    del router con
+#                      openssl s_client -connect <host>:443 -showcerts </dev/null \
+#                        2>/dev/null | openssl x509 -outform PEM > router-ca.pem
+#                    (RouterOS expone su propio certificado autofirmado en ese
+#                    handshake salvo que se le haya cargado uno propio -- verificar
+#                    la huella a mano contra la consola del router una vez, fuera
+#                    de banda, antes de confiar en el archivo resultante).
+#   tls.fingerprint  Obligatorio si tls.mode=pin (SHA-256 del certificado del
+#                    router, sacado con el mismo comando openssl de arriba + `|
+#                    openssl x509 -noout -fingerprint -sha256`). Preferido sobre
+#                    verify+ca_file cuando no se quiere mantener una CA propia
+#                    para tres routers: el pinning es la huella exacta, sin cadena
+#                    que validar.
+#   enabled          Opcional (default true). false deshabilita el router sin
+#                    borrar la entrada (DisabledReason=declared_disabled).
+#   role             Opcional, informativo: border | bng | core.
+#   serves_prefixes  Opcional (default []). Lista de CIDR IPv4/IPv6. Vacío = todos
+#                    los clientes (D14): una entrada de más no daña y una de menos
+#                    deja pasar el ataque.
+#   max_rps          Opcional. Tope de requests/s hacia ESTE router
+#                    (SEC_MIT_ROUTER_MAX_RPS si se omite).
+#   max_concurrency  Opcional. Conexiones concurrentes hacia ESTE router
+#                    (SEC_MIT_ROUTER_MAX_CONCURRENCY si se omite).
+
+routers:
+  - name: rtr-borde-1
+    host: 10.199.0.2
+    port: 443
+    username: secisp
+    password_env: SEC_MIT_PW_RTR_BORDE_1
+    tls:
+      mode: pin
+      fingerprint: "SHA256:9f2a...c1"
+    enabled: true
+    role: border
+    serves_prefixes: []
+    max_rps: 20
+    max_concurrency: 4
+
+  - name: rtr-borde-2
+    host: 10.199.0.3
+    port: 443
+    username: secisp
+    password_env: SEC_MIT_PW_RTR_BORDE_2
+    tls:
+      mode: pin
+      fingerprint: "SHA256:3b7e...a0"
+    enabled: true
+    role: border
+    serves_prefixes: []
+    max_rps: 20
+    max_concurrency: 4
+
+  # Router de laboratorio: certificado autofirmado, CA propia importada (ver
+  # tls.ca_file arriba). Para probar SIN fingerprint/CA fijados todavía, correr
+  # el proceso mitigator con SEC_MIT_TLS_INSECURE=true en vez de escribir
+  # tls.mode=insecure acá -- este archivo nunca acepta ese valor (T-393).
+  - name: rtr-lab
+    host: 192.168.100.1
+    port: 443
+    username: secisp
+    password_env: SEC_MIT_PW_RTR_LAB
+    tls:
+      mode: verify
+      ca_file: /etc/secisp/rtr-lab-ca.pem
+    enabled: false
+    role: core
+    serves_prefixes: []
+    max_rps: 10
+    max_concurrency: 2

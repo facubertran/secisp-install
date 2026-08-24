@@ -1,0 +1,12 @@
+# Dispara secisp-doctor.service una vez al día (T-035 · E12a-T03, E12 §4.4:
+# "diariamente por un timer que publica sec_ops_doctor_failures").
+[Unit]
+Description=Corre `secisp doctor` diariamente
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=secisp-doctor.service
+
+[Install]
+WantedBy=timers.target
