@@ -2,124 +2,392 @@
   "uid": "secisp-smtp",
   "title": "SECISP · SMTP / spam",
   "description": "Dashboard secundario de E07 (T-389, E10-T32, fase 2). Eje: SESIONES SMTP cosidas (isp.v_smtp_sessions, E03 §4.6.2), no paquetes ni flujos crudos.",
-  "tags": ["secisp", "smtp", "spam"],
+  "tags": [
+    "secisp",
+    "smtp",
+    "spam"
+  ],
   "schemaVersion": 41,
   "version": 1,
   "editable": false,
   "graphTooltip": 1,
   "timezone": "browser",
   "refresh": "30s",
-  "time": { "from": "now-6h", "to": "now" },
+  "time": {
+    "from": "now-6h/m",
+    "to": "now/m"
+  },
   "timepicker": {
-    "refresh_intervals": ["30s", "1m", "5m", "15m"],
-    "quick_ranges": ["now-15m", "now-1h", "now-6h", "now-24h", "now-7d", "now-30d"]
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "quick_ranges": [
+      "now-15m",
+      "now-1h",
+      "now-6h",
+      "now-24h",
+      "now-7d",
+      "now-30d"
+    ]
   },
   "links": [
-    { "type": "dashboards", "title": "SECISP", "tags": ["secisp"], "asDropdown": false,
-      "includeVars": true, "keepTime": true }
+    {
+      "type": "dashboards",
+      "title": "SECISP",
+      "tags": [
+        "secisp"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true
+    }
   ],
-  "annotations": { "list": [] },
-  "templating": { "list": [
-    { "name": "ds_ch", "type": "datasource", "query": "grafana-clickhouse-datasource",
-      "current": { "text": "SECISP ClickHouse", "value": "secisp-clickhouse" }, "hide": 2 }
-  ]},
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "ds_ch",
+        "type": "datasource",
+        "query": "grafana-clickhouse-datasource",
+        "current": {
+          "text": "SECISP ClickHouse",
+          "value": "secisp-clickhouse"
+        },
+        "hide": 2
+      }
+    ]
+  },
   "panels": [
     {
-      "id": 1, "type": "text",
-      "title": "Notas de implementación (T-389)",
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "id": 2,
+      "type": "table",
+      "title": "Fanout — clientes hablando SMTP con muchos MX distintos",
+      "description": "Un cliente que abre sesiones MTA (puerto 25) contra muchos servidores destino distintos: la señal que motiva smtp.fanout (no \"smtp.dst_fanout\", que no existe en el registro). Umbrales reales del detector en la rama MTA: uniq_dst_ips >= 100 con piso 30, mínimo 30 sesiones, sobre ventana de 1 h con cadencia de 5 min. Costura alineada a los defaults del detector (SEC_DETECT_SMTP_STITCH_GAP_SECONDS=120, SEC_DETECT_SMTP_MAX_SESSION_SECONDS=3600): antes el panel usaba 300/21600, así que fusionaba sesiones que el detector parte y daba por válidas duraciones que el detector descarta.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT isp_ip_str(src_ip) AS \"Origen\", customer_id AS \"Cliente\", uniqExact(dst_ip) AS \"MX distintos\", count() AS \"Sesiones\", round(sum(bytes_out) / 1e6, 2) AS \"MB salientes\", max(sessions_in_tuple) AS \"Max sesiones por tupla\" FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 120, max_dur = 3600) WHERE port_class = 'mta' GROUP BY \"Origen\", \"Cliente\" ORDER BY \"MX distintos\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:smtp:A2', use_query_cache = 1, query_cache_ttl = 60"
+        }
+      ],
       "options": {
-        "mode": "markdown",
-        "content": "**Este JSON se escribió sin poder correr `secisp dashboards lint`/`bench` (T-210–T-217, la herramienta de E10, todavía no existe — ver `internal/panel` y `cmd/secisp dashboards`).** Las queries de abajo se verificaron a mano contra el esquema real de `isp.v_smtp_sessions`/`isp.v_agg_smtp_sessions`, pero el último criterio de aceptación de T-389 (lint en 0 + presupuesto de bench) queda **sin verificar** hasta que esa herramienta exista.\n\n**Hueco de spec encontrado:** el panel `% de filas con collision = 1` que E10 §4.6 pide, literal, **no es construible**: `collision` era una columna de un diseño de sesiones anterior que E00b D-1 borró junto con su tabla base (E03 §4.6.2: *\"la vista anterior de esta sección —la que exponía duration_sec, collision...— se borra: su tabla base ya no existe\"*). El reemplazo honesto, que mide el mismo fenómeno (reuso de puerto efímero dentro de la ventana, la deuda #7/#22 que motivó la costura por hueco) con el esquema real: `sessions_in_tuple > 1` de `isp.v_smtp_sessions` —cuántas 5-tuplas tuvieron que partirse en más de una sesión. Panel A5, abajo.\n\n`isp.v_smtp_sessions` es una vista **parametrizada** (`win_from`/`win_to`/`stitch_gap`/`max_dur`, sin default). Las queries de abajo atan `win_from`/`win_to` al selector de rango con `$__timeFrom()`/`$__timeTo()` (R2), y fijan `stitch_gap=300`/`max_dur=21600`, los mismos valores recomendados de E07 §4.6.2 que T-386 ya validó en `testdata/queries/calibracion/smtp_distribucion_sesiones.sql`."
+        "showHeader": true,
+        "footer": {
+          "show": true,
+          "reducer": [
+            "count"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "MX distintos",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          }
+        },
+        "overrides": []
       }
     },
     {
-      "id": 2, "type": "table", "title": "Fanout — clientes hablando SMTP con muchos MX distintos",
-      "description": "Un cliente que abre sesiones MTA (puerto 25) contra muchos servidores destino distintos en la ventana: la señal de fanout que motiva smtp.dst_fanout. Panel SMTP-1 de E10 §4.6, re-escrito sobre isp.v_smtp_sessions (sesiones, no isp.v_agg_smtp_sessions crudo) porque el eje de este dashboard es la sesión.",
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 5 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT isp_ip_str(src_ip) AS \"Origen\", customer_id AS \"Cliente\", uniqExact(dst_ip) AS \"MX distintos\", count() AS \"Sesiones\", round(sum(bytes_out) / 1e6, 2) AS \"MB salientes\", max(sessions_in_tuple) AS \"Max sesiones por tupla\" FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 300, max_dur = 21600) WHERE port_class = 'mta' GROUP BY \"Origen\", \"Cliente\" ORDER BY \"MX distintos\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:smtp:A2', use_query_cache = 1, query_cache_ttl = 60"
-      }],
-      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
-                   "sortBy": [{ "displayName": "MX distintos", "desc": true }] },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": true, "inspect": false } }, "overrides": [] }
+      "id": 3,
+      "type": "table",
+      "title": "Top orígenes por volumen (“top IPs spam”)",
+      "description": "Volumen saliente por origen sobre las mismas sesiones cosidas. Ordena por MB; el panel de al lado ordena por cantidad de destinos: un spammer de alto volumen contra pocos MX aparece acá y no allá, y al revés. Costura alineada a los defaults del detector (SEC_DETECT_SMTP_STITCH_GAP_SECONDS=120, SEC_DETECT_SMTP_MAX_SESSION_SECONDS=3600): antes el panel usaba 300/21600, así que fusionaba sesiones que el detector parte y daba por válidas duraciones que el detector descarta.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT isp_ip_str(src_ip) AS \"Origen\", customer_id AS \"Cliente\", count() AS \"Sesiones\", round(sum(bytes_out) / 1e6, 2) AS \"MB salientes\", round(sum(packets_out) / greatest(sum(duration_sec), 1), 1) AS \"pps promedio\" FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 120, max_dur = 3600) WHERE port_class = 'mta' GROUP BY \"Origen\", \"Cliente\" ORDER BY \"MB salientes\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:smtp:A3', use_query_cache = 1, query_cache_ttl = 60"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": true,
+          "reducer": [
+            "count"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "MB salientes",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          }
+        },
+        "overrides": []
+      }
     },
     {
-      "id": 3, "type": "table", "title": "Top orígenes por volumen (“top IPs spam”)",
-      "description": "El panel de volumen del prototipo, conservado conceptualmente y apuntado a la vista de sesiones nueva (E10 §4.6: “el panel top IPs spam del prototipo se conserva conceptualmente”).",
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 5 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT isp_ip_str(src_ip) AS \"Origen\", customer_id AS \"Cliente\", count() AS \"Sesiones\", round(sum(bytes_out) / 1e6, 2) AS \"MB salientes\", round(sum(packets_out) / greatest(sum(duration_sec), 1), 1) AS \"pps promedio\" FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 300, max_dur = 21600) WHERE port_class = 'mta' GROUP BY \"Origen\", \"Cliente\" ORDER BY \"MB salientes\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:smtp:A3', use_query_cache = 1, query_cache_ttl = 60"
-      }],
-      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
-                   "sortBy": [{ "displayName": "MB salientes", "desc": true }] },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": true, "inspect": false } }, "overrides": [] }
+      "id": 4,
+      "type": "table",
+      "title": "Distribución de bytes por paquete",
+      "description": "Percentiles de bpp_out (bytes_out/packets_out) por port_class. bpp bajo con muchas sesiones es la firma de spam de texto corto; bpp alto y sostenido es tráfico legítimo con adjuntos. mta = puerto 25 (servidor a servidor), msa = 587/465 (cliente a su servidor). Costura alineada a los defaults del detector (SEC_DETECT_SMTP_STITCH_GAP_SECONDS=120, SEC_DETECT_SMTP_MAX_SESSION_SECONDS=3600): antes el panel usaba 300/21600, así que fusionaba sesiones que el detector parte y daba por válidas duraciones que el detector descarta.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT port_class AS \"Clase\", count() AS \"Sesiones\", round(quantile(0.5)(bpp_out), 1) AS \"bytes/paquete p50\", round(quantile(0.9)(bpp_out), 1) AS \"bytes/paquete p90\", round(quantile(0.99)(bpp_out), 1) AS \"bytes/paquete p99\" FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 120, max_dur = 3600) GROUP BY \"Clase\" ORDER BY \"Sesiones\" DESC LIMIT 10 SETTINGS log_comment = 'secisp:smtp:A4', use_query_cache = 1, query_cache_ttl = 60"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "count"
+          ],
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "inspect": false
+          }
+        },
+        "overrides": []
+      }
     },
     {
-      "id": 4, "type": "table", "title": "Distribución de bytes por paquete",
-      "description": "Percentiles de bpp_out (bytes_out/packets_out) por port_class. Un pico en bpp bajo con muchas sesiones es la firma de spam de texto corto; bpp alto y sostenido es tráfico legítimo de adjuntos.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT port_class AS \"Clase\", count() AS \"Sesiones\", round(quantile(0.5)(bpp_out), 1) AS \"bytes/paquete p50\", round(quantile(0.9)(bpp_out), 1) AS \"bytes/paquete p90\", round(quantile(0.99)(bpp_out), 1) AS \"bytes/paquete p99\" FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 300, max_dur = 21600) GROUP BY \"Clase\" ORDER BY \"Sesiones\" DESC LIMIT 10 SETTINGS log_comment = 'secisp:smtp:A4', use_query_cache = 1, query_cache_ttl = 60"
-      }],
-      "options": { "showHeader": true, "footer": { "show": false, "reducer": ["count"], "fields": "" } },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": false, "inspect": false } }, "overrides": [] }
+      "id": 5,
+      "type": "table",
+      "title": "Distribución de duración de sesión",
+      "description": "Percentiles de duration_sec por port_class, más la fracción con duration_valid=0 (sesión que superó el techo max_dur). Ese techo ahora es 3600 s, el mismo que usa el detector: una sesión de más de 1 h queda excluida de is_stalled e is_lowrate, que los dos exigen duration_valid. Antes el panel usaba 21600 s y mostraba como válidas sesiones que el detector estaba descartando.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT port_class AS \"Clase\", count() AS \"Sesiones\", round(quantile(0.5)(duration_sec), 1) AS \"duración p50 (s)\", round(quantile(0.9)(duration_sec), 1) AS \"duración p90 (s)\", round(quantile(0.99)(duration_sec), 1) AS \"duración p99 (s)\", round(100 * countIf(NOT duration_valid) / greatest(count(), 1), 2) AS \"% cortadas por max_dur\" FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 120, max_dur = 3600) GROUP BY \"Clase\" ORDER BY \"Sesiones\" DESC LIMIT 10 SETTINGS log_comment = 'secisp:smtp:A5', use_query_cache = 1, query_cache_ttl = 60"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "count"
+          ],
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "inspect": false
+          }
+        },
+        "overrides": []
+      }
     },
     {
-      "id": 5, "type": "table", "title": "Distribución de duración de sesión",
-      "description": "Percentiles de duration_sec por port_class, más la fracción con duration_valid=0 (sesión cortada por el techo max_dur=21600s de costura infinita, P-E07-5).",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT port_class AS \"Clase\", count() AS \"Sesiones\", round(quantile(0.5)(duration_sec), 1) AS \"duración p50 (s)\", round(quantile(0.9)(duration_sec), 1) AS \"duración p90 (s)\", round(quantile(0.99)(duration_sec), 1) AS \"duración p99 (s)\", round(100 * countIf(NOT duration_valid) / greatest(count(), 1), 2) AS \"% cortadas por max_dur\" FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 300, max_dur = 21600) GROUP BY \"Clase\" ORDER BY \"Sesiones\" DESC LIMIT 10 SETTINGS log_comment = 'secisp:smtp:A5', use_query_cache = 1, query_cache_ttl = 60"
-      }],
-      "options": { "showHeader": true, "footer": { "show": false, "reducer": ["count"], "fields": "" } },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": false, "inspect": false } }, "overrides": [] }
-    },
-    {
-      "id": 6, "type": "stat", "title": "% de tuplas con colisión de puerto efímero (costura)",
+      "id": 6,
+      "type": "stat",
+      "title": "% de sesiones en tuplas partidas por costura",
       "description": "Reemplazo real de “% de filas con collision = 1” (E10 §4.6): esa columna no existe más (E00b D-1 la borró junto con su tabla base, E03 §4.6.2). Mide lo mismo con el esquema actual: fracción de sesiones cuya 5-tupla tuvo que partirse en más de una sesión por costura (sessions_in_tuple > 1) — sin la costura por hueco de D-1, estas hubieran colisionado en una sola fila (deuda #7/#22). Panel obligatorio, sin él los demás paneles mienten (E03 §4.6).",
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 23 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT round(100 * countIf(sessions_in_tuple > 1) / greatest(count(), 1), 2) AS value FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 300, max_dur = 21600) LIMIT 1 SETTINGS log_comment = 'secisp:smtp:A6', use_query_cache = 1, query_cache_ttl = 60"
-      }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
-                   "textMode": "value", "colorMode": "background", "graphMode": "none" },
-      "fieldConfig": { "defaults": {
-        "unit": "percent", "min": 0, "max": 100,
-        "thresholds": { "mode": "absolute", "steps": [
-          { "color": "green", "value": null }, { "color": "orange", "value": 10 }, { "color": "red", "value": 30 } ] }
-      }, "overrides": [] }
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 18
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT round(100 * countIf(sessions_in_tuple > 1) / greatest(count(), 1), 2) AS value FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 120, max_dur = 3600) LIMIT 1 SETTINGS log_comment = 'secisp:smtp:A6', use_query_cache = 1, query_cache_ttl = 60"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^value$/"
+        },
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     },
     {
-      "id": 7, "type": "stat", "title": "% de sesiones sin flags TCP válidas",
-      "description": "Panel obligatorio de calidad del dato (E10 §4.6, E03 §4.6): fracción de sesiones donde flags_valid_chunks = 0, es decir ningún fragmento de la sesión trajo tcp_flags_valid=1. Cuando esto sube, smtp.stalled/smtp.refused (que dependen de banderas TCP) pierden cobertura silenciosamente — E03 §3830: “E07 pierde los 2 patrones de duración y queda con small_session + dst_fanout”.",
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 23 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT round(100 * countIf(flags_valid_chunks = 0) / greatest(count(), 1), 2) AS value FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 300, max_dur = 21600) LIMIT 1 SETTINGS log_comment = 'secisp:smtp:A7', use_query_cache = 1, query_cache_ttl = 60"
-      }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
-                   "textMode": "value", "colorMode": "background", "graphMode": "none" },
-      "fieldConfig": { "defaults": {
-        "unit": "percent", "min": 0, "max": 100,
-        "thresholds": { "mode": "absolute", "steps": [
-          { "color": "green", "value": null }, { "color": "orange", "value": 10 }, { "color": "red", "value": 30 } ] }
-      }, "overrides": [] }
+      "id": 7,
+      "type": "stat",
+      "title": "Cobertura de flags TCP (guarda de smtp.refused)",
+      "description": "Fracción de chunks de sesión que trajeron tcp_flags_valid=1. Es la métrica que realmente gobierna smtp.refused: su guarda es un RATIO por sesión (FlagsCoverage < RefusedMinFlagsCoverage = 0.80 -> descarta el candidato), no un booleano. Antes este panel contaba sesiones con flags_valid_chunks = 0, o sea CERO cobertura: con un exportador que informa flags de forma intermitente marcaba 0% en verde mientras la guarda descartaba a todos los candidatos. Ojo con la polaridad: acá MÁS es MEJOR. Por debajo de 80, smtp.refused y smtp.stalled pierden cobertura en silencio y la solución está en el traffic-flow del router, no en el panel.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 18
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT round(100 * sum(flags_valid_chunks) / greatest(sum(chunks), 1), 2) AS value FROM isp.v_smtp_sessions(win_from = $__fromTime, win_to = $__toTime, stitch_gap = 120, max_dur = 3600) SETTINGS log_comment = 'secisp:smtp:A7', use_query_cache = 1, query_cache_ttl = 60"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^value$/"
+        },
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "green",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     }
   ]
 }

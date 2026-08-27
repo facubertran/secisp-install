@@ -22,6 +22,28 @@ Description=secisp collector (NetFlow/IPFIX/sFlow)
 After=network-online.target docker.service
 Wants=network-online.target
 
+# Límite de arranques explícito (antes se heredaba el default de systemd, 5
+# arranques en 10 s, sin que ninguna unidad lo declarara). Importa porque el
+# modo de falla real de este rol es un archivo de configuración inválido: el
+# proceso no arranca, Restart=always lo reintenta cada RestartSec, y al
+# agotarse el límite la unidad queda en `failed` DE FORMA PERMANENTE -- un
+# `systemctl restart` posterior devuelve "start request repeated too quickly"
+# y no hace nada hasta que alguien corra `systemctl reset-failed`. Ese paso no
+# estaba documentado en ningún runbook, así que un operador que arreglaba el
+# YAML veía la unidad seguir caída sin entender por qué.
+#
+# 10 arranques en 60 s (en vez de 5 en 10 s) le da ~20 s de reintentos a una
+# dependencia que tarda en levantar --el caso de un reboot donde ClickHouse
+# todavía no está arriba-- sin dejar de latchear ante un error de config
+# genuino, que es lo que se quiere: un crash loop infinito sobre un archivo
+# roto llena el journal y esconde el problema.
+#
+# A VERIFICAR contra un arranque fallido real antes de darlo por bueno: medir
+# el ciclo con `journalctl -u <unidad> -o short-monotonic` induciendo el fallo
+# (renombrar el archivo de config) y ajustar si el ciclo real supera los 60 s.
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
 [Service]
 Type=notify
 User=secisp

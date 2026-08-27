@@ -226,6 +226,25 @@ GRANT INSERT ON isp.ops_feedback TO secisp_ops;
 GRANT INSERT ON isp.ops_audit TO secisp_ops;
 -- Toda su lectura del esquema isp entra por secisp_ro; lo propio es system.* y los cuatro INSERT ops_*.
 
+-- ── secisp_config: CLI declarativo de E04 §4.11, lo corre una PERSONA ────────
+-- Séptimo usuario, desviación declarada de E00b D-39 (que enumera seis nombres,
+-- todos de PROCESO). Es la identidad de `secisp config diff|export|apply`: el
+-- único con INSERT sobre las tres dim_* declarativas. NO se le dio a secisp_ops
+-- porque ese es el usuario del daemon watchdog, e INSERT sobre dim_net_prefixes
+-- es un privilegio de bypass de mitigación (scope='infra'/ignore_src exime a una
+-- IP de todo bloqueo en ≤60 s, vía el never-block set y las UDF net_ignored_*).
+CREATE USER IF NOT EXISTS secisp_config IDENTIFIED WITH sha256_password BY 'CHANGE_ME_secisp_config_password';
+GRANT SELECT, INSERT ON isp.dim_net_prefixes TO secisp_config;
+GRANT SELECT, INSERT ON isp.dim_exporters TO secisp_config;
+GRANT SELECT, INSERT ON isp.dim_exporter_ifaces TO secisp_config;
+GRANT INSERT ON isp.ops_audit TO secisp_config;
+-- SYSTEM RELOAD DICTIONARY: `config apply` recarga los cuatro diccionarios al
+-- terminar (configApplyDicts, cmd/secisp/config_apply.go). ClickHouse no acepta
+-- ese privilegio acotado por objeto en todas las versiones, así que va sobre *.*
+-- -- es el único GRANT no acotado del archivo, y solo habilita recargar
+-- diccionarios, nunca leer ni escribir datos.
+GRANT SYSTEM RELOAD DICTIONARY ON *.* TO secisp_config;
+
 -- ── secisp_grafana: SOLO vistas, vía el rol (E00 ADR-016) ───────────────────
 -- (E00c C-18) Cero settings propios: los topes viven en el SETTINGS PROFILE de
 -- 94b_profile_panel.sql. Redeclararlos acá hace fallar el CREATE USER con

@@ -1,109 +1,278 @@
 {
   "uid": "secisp-forense",
   "title": "SECISP · Forense (rango largo)",
-  "description": "Único dashboard de E10 con rango largo permitido -- hasta 90 días (T-421, E10-T34, fase 2, Q13 pendiente de confirmar con el usuario). Fuentes: v_attack_events, v_det_cases, v_agg_src_1h, v_mit_actions, v_reputation_self -- deliberadamente NUNCA flows_raw ni agregados de minuto (O11/E10-13). Destino de los data links por case_id (home, B1) y por detector_id (E1/P5).",
-  "tags": ["secisp", "forense"],
+  "description": "Consulta forense de rango largo sobre isp.v_mit_actions: qué se le hizo a un origen y por qué, para responder un reclamo viejo sin revivir el caso. Un solo panel, a pedido. Filtrable por case_id, detector_id o IP de origen.",
+  "tags": [
+    "secisp",
+    "forense"
+  ],
   "schemaVersion": 41,
   "version": 1,
   "editable": false,
   "graphTooltip": 1,
   "timezone": "browser",
   "refresh": "",
-  "time": { "from": "now-7d", "to": "now" },
+  "time": {
+    "from": "now-7d/m",
+    "to": "now/m"
+  },
   "timepicker": {
-    "quick_ranges": ["now-24h", "now-7d", "now-30d", "now-90d"]
+    "quick_ranges": [
+      "now-24h",
+      "now-7d",
+      "now-30d",
+      "now-90d"
+    ]
   },
   "links": [
-    { "type": "dashboards", "title": "SECISP", "tags": ["secisp"], "asDropdown": false,
-      "includeVars": true, "keepTime": true }
+    {
+      "type": "dashboards",
+      "title": "SECISP",
+      "tags": [
+        "secisp"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true
+    }
   ],
-  "annotations": { "list": [] },
-  "templating": { "list": [
-    { "name": "ds_ch", "type": "datasource", "query": "grafana-clickhouse-datasource",
-      "current": { "text": "SECISP ClickHouse", "value": "secisp-clickhouse" }, "hide": 2 },
-    { "name": "case_id", "type": "textbox", "label": "case_id (drill-down desde B1)",
-      "query": "", "current": { "text": "", "value": "" }, "hide": 0 },
-    { "name": "detector", "type": "textbox", "label": "detector_id (drill-down desde E1/P5)",
-      "query": "", "current": { "text": "", "value": "" }, "hide": 0 }
-  ]},
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "ds_ch",
+        "type": "datasource",
+        "query": "grafana-clickhouse-datasource",
+        "current": {
+          "text": "SECISP ClickHouse",
+          "value": "secisp-clickhouse"
+        },
+        "hide": 2
+      },
+      {
+        "name": "case_id",
+        "type": "textbox",
+        "label": "case_id",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "hide": 0
+      },
+      {
+        "name": "detector",
+        "type": "textbox",
+        "label": "Detector",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "hide": 0
+      },
+      {
+        "name": "src_ip",
+        "type": "textbox",
+        "label": "IP origen",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "hide": 0
+      }
+    ]
+  },
   "panels": [
     {
-      "id": 1, "type": "text",
-      "title": "Notas de implementación (T-421)",
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "id": 5,
+      "type": "table",
+      "title": "Histórico de acciones de mitigación",
+      "description": "isp.v_mit_actions agrupado por EPISODIO: una fila por combinación de caso, detector, acción, estado, modo y motivo de skip, con \"Desde\"/\"Hasta\" y cuántas veces se reemitió. Antes era una fila por tick del mitigador y con 277.000 filas por día el LIMIT 200 cubría 62 segundos; con un case_id filtrado era peor, porque un bloqueo sano de 40 min dejaba 474 filas y el límite se comía justo la de apertura -- la única que dice por qué y con qué score se bloqueó. Filtrable por $case_id, $detector y $src_ip; de los tres, src_ip es el único barato (es la segunda columna del ORDER BY de mit_actions, case_id no está en él). OJO con \"Acción\": observe es dry-run, se calculó el plan y NO se tocó ningún router -- en la medición de producción era el 89% de las filas. \"Modo\" distingue además un detector en mitigate de uno en shadow. LIMITACIÓN del agrupado: dos episodios separados que compartan exactamente la misma huella (bloqueo, unblock, y re-bloqueo idéntico) se funden en una fila y el hueco queda tapado entre Desde y Hasta; un cambio de estado o una acción distinta sí abren fila propia. Para el detalle tick a tick de un episodio puntual, consultar isp.v_mit_actions directo.",
+      "gridPos": {
+        "h": 22,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT min(created_at) AS \"Desde\", max(created_at) AS \"Hasta\", count() AS \"Reemisiones\", src_ip_str AS \"Origen\", anyIf(customer_id, customer_id != '') AS \"Cliente\", detector_id AS \"Detector\", action AS \"Acción\", status AS \"Estado\", mode AS \"Modo\", skip_reason AS \"Motivo de skip\", max(score) AS \"Score\", max(timeout_seconds) AS \"Timeout (s)\", any(address_list) AS \"Lista\", case_id AS \"case_id\" FROM isp.v_mit_actions WHERE $__timeFilter(created_at) AND (${src_ip:sqlstring} = '' OR src_ip = toIPv6OrNull(${src_ip:sqlstring})) AND (${case_id:sqlstring} = '' OR case_id = toUUIDOrNull(${case_id:sqlstring})) AND (${detector:sqlstring} = '' OR detector_id = ${detector:sqlstring}) GROUP BY case_id, src_ip_str, detector_id, action, status, mode, skip_reason ORDER BY \"Hasta\" DESC LIMIT 200 SETTINGS log_comment = 'secisp:forense:A5', use_query_cache = 1, query_cache_ttl = 60"
+        }
+      ],
       "options": {
-        "mode": "markdown",
-        "content": "**Este JSON se escribió sin poder correr `secisp dashboards lint`/`bench` (T-210–T-217, la herramienta de E10, todavía no existe -- ver `internal/panel`, confirmado vacío al escribir este archivo).** El criterio de aceptación de T-421 de responder en <= 3 s con 30 días (O11, E10-13) queda **sin verificar** hasta que esa herramienta exista para medirlo -- las queries de abajo SÍ se diseñaron deliberadamente para no tocar `flows_raw` ni ningún `agg_*_1m`/`agg_*_10s` (que es exactamente lo que O11 exige: `det_*`, `agg_src_1h` y `mit_actions` son las únicas fuentes cuyo costo no escala con el volumen de flujos crudos).\n\n**Variables `$case_id`/`$detector`** son el destino de los data links de B1 (home, todavía sin construir -- T-297-T-303) y de los paneles E1/P5 de esta misma spec: son `textbox` vacíos por default (sin filtrar nada) y cada tabla de abajo los aplica como filtro opcional cuando vienen seteados por la URL (`?var-case_id=...`/`?var-detector=...`).\n\n**Q13 (E10 §9.2, sin confirmar con el usuario todavía):** el home ofrece hasta 30 días en su propio timepicker y todo lo más largo se manda acá -- este dashboard soporta hasta 90 días porque `isp.det_events`/`isp.det_cases` retienen eso, no porque el home vaya a ofrecer ese rango directamente."
+        "showHeader": true,
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Hasta",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Modo"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "mitigate": {
+                        "text": "mitigate",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "alert": {
+                        "text": "alert",
+                        "color": "yellow",
+                        "index": 1
+                      },
+                      "shadow": {
+                        "text": "shadow",
+                        "color": "orange",
+                        "index": 2
+                      },
+                      "off": {
+                        "text": "off",
+                        "color": "text",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Acción"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "observe": {
+                        "text": "observe (dry-run)",
+                        "color": "text",
+                        "index": 0
+                      },
+                      "block_src": {
+                        "text": "block_src",
+                        "color": "red",
+                        "index": 1
+                      },
+                      "block_service": {
+                        "text": "block_service",
+                        "color": "red",
+                        "index": 2
+                      },
+                      "block_pair": {
+                        "text": "block_pair",
+                        "color": "red",
+                        "index": 3
+                      },
+                      "rate_limit": {
+                        "text": "rate_limit",
+                        "color": "orange",
+                        "index": 4
+                      },
+                      "unblock": {
+                        "text": "unblock",
+                        "color": "green",
+                        "index": 5
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reemisiones"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "description",
+                "value": "Cuántas filas de mit_actions produjo este episodio. Hasta que se despliegue la guarda de reemisión (auditgate.go) un episodio sano acumula cientos: 1 por tick de 5 s. Un número alto NO significa que se haya actuado muchas veces."
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 50
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       }
-    },
-    {
-      "id": 2, "type": "table", "title": "Reincidencia por cliente",
-      "description": "Casos distintos, acciones de mitigación y score pico por cliente en el rango -- el indicador operativo de quién vuelve una y otra vez. Fuente: isp.v_det_cases (no v_attack_events: acá el eje es el CASO, no el evento individual).",
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 6 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT customer_id AS \"Cliente\", count() AS \"Casos\", sum(mitigation_count) AS \"Acciones de mitigación\", max(peak_score) AS \"Score pico\", groupUniqArray(10)(attack_class) AS \"Clases\" FROM isp.v_det_cases WHERE $__timeFilter(opened_at) AND customer_id != '' AND ('${case_id}' = '' OR case_id = toUUIDOrNull('${case_id}')) GROUP BY \"Cliente\" ORDER BY \"Casos\" DESC LIMIT 100 SETTINGS log_comment = 'secisp:forense:A2', use_query_cache = 1, query_cache_ttl = 300"
-      }],
-      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
-                   "sortBy": [{ "displayName": "Casos", "desc": true }] },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": true, "inspect": false } },
-        "overrides": [] }
-    },
-    {
-      "id": 3, "type": "table", "title": "Evolución mensual por clase de ataque",
-      "description": "Casos abiertos por mes y attack_class -- la tendencia que responde '¿esto está empeorando?' sin tener que leer 90 días de eventos individuales.",
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 6 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT toStartOfMonth(opened_at) AS \"Mes\", attack_class AS \"Clase\", count() AS \"Casos\", uniqExact(customer_id) AS \"Clientes distintos\" FROM isp.v_det_cases WHERE $__timeFilter(opened_at) AND ('${detector}' = '' OR has(detectors, '${detector}')) GROUP BY \"Mes\", \"Clase\" ORDER BY \"Mes\" DESC, \"Casos\" DESC LIMIT 200 SETTINGS log_comment = 'secisp:forense:A3', use_query_cache = 1, query_cache_ttl = 300"
-      }],
-      "options": { "showHeader": true, "footer": { "show": false, "reducer": ["count"], "fields": "" } },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": true, "inspect": false } }, "overrides": [] }
-    },
-    {
-      "id": 4, "type": "table", "title": "Curva de IPs propias listadas (el indicador de resultado)",
-      "description": "isp.v_reputation_self por semana: cuántos IPs propios están actualmente listados en blocklists externas. Es EL indicador de resultado del sistema (A7 del home es su versión instantánea) -- si esta curva no baja con el tiempo, el sistema no está cumpliendo su objetivo de negocio, sin importar cuántos eventos emita.",
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 16 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT toStartOfWeek(checked_at) AS \"Semana\", uniqExactIf(ip, listed = 1) AS \"IPs propias listadas\", uniqExact(ip) AS \"IPs propias chequeadas\", round(100 * uniqExactIf(ip, listed = 1) / greatest(uniqExact(ip), 1), 2) AS \"% listadas\" FROM isp.v_reputation_self WHERE $__timeFilter(checked_at) GROUP BY \"Semana\" ORDER BY \"Semana\" DESC LIMIT 90 SETTINGS log_comment = 'secisp:forense:A4', use_query_cache = 1, query_cache_ttl = 300"
-      }],
-      "options": { "showHeader": true, "footer": { "show": false, "reducer": ["count"], "fields": "" } },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": false, "inspect": false } }, "overrides": [] }
-    },
-    {
-      "id": 5, "type": "table", "title": "Histórico de acciones de mitigación",
-      "description": "isp.v_mit_actions en el rango -- la respuesta a un reclamo antiguo ('¿por qué me bloquearon el 3 de mayo?') sin tener que revivir el caso completo. Filtrable por $case_id/$detector.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 26 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT created_at AS \"Cuándo\", src_ip_str AS \"Origen\", customer_id AS \"Cliente\", detector_id AS \"Detector\", action AS \"Acción\", status AS \"Estado\", skip_reason AS \"Motivo de skip\", score AS \"Score\", timeout_seconds AS \"Timeout (s)\", case_id AS \"case_id\" FROM isp.v_mit_actions WHERE $__timeFilter(created_at) AND ('${case_id}' = '' OR case_id = toUUIDOrNull('${case_id}')) AND ('${detector}' = '' OR detector_id = '${detector}') ORDER BY created_at DESC LIMIT 200 SETTINGS log_comment = 'secisp:forense:A5', use_query_cache = 1, query_cache_ttl = 60"
-      }],
-      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
-                   "sortBy": [{ "displayName": "Cuándo", "desc": true }] },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": true, "inspect": false } }, "overrides": [] }
-    },
-    {
-      "id": 6, "type": "table", "title": "Víctimas más frecuentes",
-      "description": "isp.v_attack_events.top_dsts_str en el rango -- destinos que más aparecen como víctima de un ataque saliente de un cliente propio. ADVERTENCIA: top_dsts está limitado a <= 20 destinos POR EVENTO (E00 §4.3.1) -- más allá de una ventana de 6 h esta lista es una MUESTRA, no el universo completo de víctimas; para el total exacto hay que ir a isp.v_attack_victims con el rango acotado.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 36 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT victim_ip_str AS \"Víctima\", count() AS \"Eventos con esta víctima en top_dsts\", uniqExact(customer_id) AS \"Clientes atacantes distintos\", groupUniqArray(10)(attack_class) AS \"Clases\" FROM isp.v_attack_victims WHERE $__timeFilter(window_start) AND ('${detector}' = '' OR detector_id = '${detector}') GROUP BY \"Víctima\" ORDER BY \"Eventos con esta víctima en top_dsts\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:forense:A6', use_query_cache = 1, query_cache_ttl = 300"
-      }],
-      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
-                   "sortBy": [{ "displayName": "Eventos con esta víctima en top_dsts", "desc": true }] },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": true, "inspect": false } }, "overrides": [] }
     }
   ]
 }

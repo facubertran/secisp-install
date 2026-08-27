@@ -61,7 +61,24 @@ groups:
     interval: 30s
     rules:
       - alert: SecMitigatorMuteWithCases
-        expr: sum(sec_detect_cases{state="confirmed"}) > 0 and rate(sec_mit_actions_total[15m]) == 0 and sec_mit_enabled == 1
+        # Los tres operandos se agregan a {} y se unen con `and on()` A
+        # PROPÓSITO: la versión anterior era
+        #   sum(sec_detect_cases{...}) > 0 and rate(sec_mit_actions_total[15m]) == 0 and sec_mit_enabled == 1
+        # y NUNCA podía disparar. `and` sin modificador exige conjuntos de
+        # etiquetas IDÉNTICOS en los dos lados, y los tres operandos tenían
+        # conjuntos distintos: sum() sin `by` da {}, rate(sec_mit_actions_total)
+        # da {action,status,detector_id,job,instance} (metrics.go) y
+        # sec_mit_enabled da {job,instance}. Ningún par matcheaba jamás.
+        #
+        # El `or vector(0)` del segundo operando cubre el PEOR caso, que es
+        # justo el que esta alerta existe para ver: sec_mit_actions_total es un
+        # CounterVec que no crea ninguna serie hasta el primer PlanOutcome, así
+        # que con el tick loop MUERTO sum(rate(...)) sale vacío y sin ese `or`
+        # la comparación == 0 también saldría vacía.
+        expr: >-
+          sum(sec_detect_cases{state="confirmed"}) > 0
+          and on() (sum(rate(sec_mit_actions_total[15m])) or vector(0)) == 0
+          and on() max(sec_mit_enabled) == 1
         for: 15m
         labels:
           severity: critical

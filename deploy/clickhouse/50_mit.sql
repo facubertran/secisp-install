@@ -54,7 +54,17 @@ CREATE TABLE IF NOT EXISTS isp.mit_actions
                         'block_src'=3, 'rate_limit'=4, 'unblock'=5),
     -- ok        = aplicado en TODOS los routers destino
     -- partial   = aplicado en algunos
-    -- failed    = en ninguno (reintento rápido; NO integra cooldowns)
+    -- failed    = en ninguno. El PRIMER reintento es inmediato (el tick
+    --             siguiente) y no integra cooldowns, igual que antes; a
+    --             partir del segundo fallo consecutivo de la MISMA entrada,
+    --             retryBackoff (internal/mitigate/retrybackoff.go) lo
+    --             espacia exponencialmente hasta
+    --             SEC_MIT_RETRY_BACKOFF_MAX_SECONDS. El contrato anterior
+    --             decía "reintento rápido" a secas y era literal: una
+    --             entrada que fallaba se reintentaba cada
+    --             SEC_MIT_TICK_SECONDS indefinidamente -- 25.638 filas
+    --             failed en 24 h contra un solo destino, medido en
+    --             producción.
     -- skipped   = un safeguard lo frenó a propósito
     -- dry_run   = el detector/mitigador está en modo observación
     status        Enum8('ok'=1, 'partial'=2, 'failed'=3, 'skipped'=4, 'dry_run'=5),
@@ -70,7 +80,14 @@ CREATE TABLE IF NOT EXISTS isp.mit_actions
 
     -- ── Agregado por E11 ───────────────────────────────────────────────────
     -- Identidad del plan: determinística (§4.3). Varias filas comparten
-    -- plan_id solo si el mismo plan se reintentó tras un 'failed'.
+    -- plan_id cuando el mismo plan se reintentó tras un 'failed', o cuando
+    -- pasó SEC_MIT_AUDIT_HEARTBEAT_SECONDS sin que su huella auditable
+    -- cambiara (latido de auditGate, internal/mitigate/auditgate.go). Este
+    -- contrato estuvo VIOLADO hasta que existió esa guarda: el lazo de
+    -- auditoría escribía una fila por caso accionable en CADA tick, así que
+    -- un bloqueo sano de 40 minutos acumulaba 474 filas con el mismo
+    -- plan_id. Cualquier consumidor que cuente filas en vez de
+    -- uniqExact(case_id) tiene que asumir esa historia en los datos viejos.
     plan_id       UUID,
     -- Mismo Enum8 CERRADO que det_events.attack_class (E00 §4.3.1). Necesario
     -- para que el cooldown y la escalera puedan agrupar por

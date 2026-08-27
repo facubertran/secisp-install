@@ -2,137 +2,458 @@
   "uid": "secisp-ddos",
   "title": "SECISP · DDoS / reflexión",
   "description": "Dashboard secundario de E08 (T-420, E10-T33, fase 2). Eje: tasa y amplificación -- pps/bps de ventana corta para floods, dispersión de destinos para carpet bombing, y el factor de amplificación medido de las cinco refl.* + ddos.amp_request.",
-  "tags": ["secisp", "ddos", "reflexion"],
+  "tags": [
+    "secisp",
+    "ddos",
+    "reflexion"
+  ],
   "schemaVersion": 41,
   "version": 1,
   "editable": false,
   "graphTooltip": 1,
   "timezone": "browser",
   "refresh": "30s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "timepicker": {
-    "refresh_intervals": ["30s", "1m", "5m", "15m"],
-    "quick_ranges": ["now-15m", "now-1h", "now-6h", "now-24h"]
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "quick_ranges": [
+      "now-15m",
+      "now-1h",
+      "now-3h",
+      "now-6h"
+    ]
   },
   "links": [
-    { "type": "dashboards", "title": "SECISP", "tags": ["secisp"], "asDropdown": false,
-      "includeVars": true, "keepTime": true }
+    {
+      "type": "dashboards",
+      "title": "SECISP",
+      "tags": [
+        "secisp"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true
+    }
   ],
-  "annotations": { "list": [] },
-  "templating": { "list": [
-    { "name": "ds_ch", "type": "datasource", "query": "grafana-clickhouse-datasource",
-      "current": { "text": "SECISP ClickHouse", "value": "secisp-clickhouse" }, "hide": 2 }
-  ]},
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "ds_ch",
+        "type": "datasource",
+        "query": "grafana-clickhouse-datasource",
+        "current": {
+          "text": "SECISP ClickHouse",
+          "value": "secisp-clickhouse"
+        },
+        "hide": 2
+      }
+    ]
+  },
   "panels": [
     {
-      "id": 1, "type": "text",
-      "title": "Notas de implementación (T-420)",
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "id": 2,
+      "type": "table",
+      "title": "pps/bps por origen (ventana corta, v_agg_src_10s)",
+      "description": "Volumen puro por origen en la ventana de 10 s -- la que sirve para detectar floods (E00b D-3: agg_src_10s es deliberadamente volumétrica, sin columnas de cardinalidad ni flags). La fuente retiene 6 h (TTL); un rango más largo se trunca sin aviso.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT isp_ip_str(src_ip) AS \"Origen\", customer_id AS \"Cliente\", round(max(pps), 1) AS \"pps pico\", round(max(bps) / 1e6, 2) AS \"Mbps pico\", sum(packets) AS \"Paquetes\", sum(syn_only_packets) AS \"SYN sin ACK\" FROM isp.v_agg_src_10s WHERE $__timeFilter(window_start) AND flow_dir = 'outbound' AND src_scope = 'customer' GROUP BY \"Origen\", \"Cliente\" ORDER BY \"pps pico\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:ddos:A2', use_query_cache = 1, query_cache_ttl = 30"
+        }
+      ],
       "options": {
-        "mode": "markdown",
-        "content": "**Este JSON se escribió sin poder correr `secisp dashboards lint`/`bench` (T-210–T-217, la herramienta de E10, todavía no existe -- ver `internal/panel` y `cmd/secisp dashboards`, confirmado vacío al escribir este archivo).** Las queries de abajo se verificaron a mano contra el esquema real de `isp.v_agg_src_10s`/`isp.v_agg_src_1m`/`isp.v_agg_src_port_1m`, pero el último criterio de aceptación de T-420 (lint en 0 + presupuesto de bench) queda **sin verificar** hasta que esa herramienta exista.\n\n**Desvío de nombre de columna, spec vs. esquema real:** E10 §4.6 describe la tabla de reflexión con `amplification_bytes`/`uniq_peers_out`, pero la vista realmente desplegada (`isp.v_agg_src_port_1m`, `deploy/clickhouse/30_agg_src_port_1m.sql`) expone `amp_factor_bytes` y `uniq_peer_resp`/`uniq_peer_req` -- este dashboard se escribió contra los nombres reales, no la prosa de la spec (mismo criterio que `10-smtp.json` ya estableció para su propio desvío de `collision`). `uniq_peer_resp` es la cardinalidad de peers a los que el servicio respondió en la ventana -- las víctimas potenciales de la reflexión, que es lo que la spec llama `uniq_peers_out` -- y es la misma columna que la query R1 de E08 §4.6.4 usa para `peer_concentration`.\n\n`isp.v_agg_src_10s` es DELIBERADAMENTE volumétrica (E00b D-3): solo `pps`/`bps`, sin `uniq_dst_*` ni flags -- por eso el panel de carpet bombing lee `isp.v_agg_src_1m` en vez de la ventana corta. E08 es dependencia BLANDA de este dashboard (E00 §6): si los detectores `refl.*`/`ddos.amp_request` de E08 no corrieron todavía sobre una ventana dada, la tabla de reflexión simplemente no tiene filas para esa ventana -- no rompe, muestra menos."
+        "showHeader": true,
+        "footer": {
+          "show": true,
+          "reducer": [
+            "count"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "pps pico",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          }
+        },
+        "overrides": []
       }
     },
     {
-      "id": 2, "type": "table", "title": "pps/bps por origen (ventana corta, v_agg_src_10s)",
-      "description": "Volumen puro por origen en la ventana de 10 s -- la que sirve para detectar floods (E00b D-3: agg_src_10s es deliberadamente volumétrica, sin columnas de cardinalidad ni flags).",
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 6 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT isp_ip_str(src_ip) AS \"Origen\", customer_id AS \"Cliente\", round(max(pps), 1) AS \"pps pico\", round(max(bps) / 1e6, 2) AS \"Mbps pico\", sum(packets) AS \"Paquetes\", sum(syn_only_packets) AS \"SYN sin flags\" FROM isp.v_agg_src_10s WHERE $__timeFilter(window_start) AND flow_dir = 'outbound' AND src_scope = 'customer' GROUP BY \"Origen\", \"Cliente\" ORDER BY \"pps pico\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:ddos:A2', use_query_cache = 1, query_cache_ttl = 30"
-      }],
-      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
-                   "sortBy": [{ "displayName": "pps pico", "desc": true }] },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": true, "inspect": false } }, "overrides": [] }
+      "id": 3,
+      "type": "table",
+      "title": "Carpet bombing -- dispersión de destinos (v_agg_src_1m)",
+      "description": "uniq_dst_nets alto sobre un origen: la firma de carpet bombing (D-2/D-3 -- la cardinalidad de red vive solo en agg_src_1m, agg_src_10s no la tiene). ddos.carpet_bombing corre sobre esta misma fuente. La fuente retiene 6 h (TTL); un rango más largo se trunca sin aviso.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT isp_ip_str(src_ip) AS \"Origen\", customer_id AS \"Cliente\", max(uniq_dst_nets) AS \"Redes /24 distintas\", max(uniq_dst_ips) AS \"IPs distintas\", round(max(pps), 1) AS \"pps pico\" FROM isp.v_agg_src_1m WHERE $__timeFilter(window_start) AND flow_dir = 'outbound' AND src_scope = 'customer' GROUP BY \"Origen\", \"Cliente\" HAVING \"Redes /24 distintas\" > 0 ORDER BY \"Redes /24 distintas\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:ddos:A3', use_query_cache = 1, query_cache_ttl = 30"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": true,
+          "reducer": [
+            "count"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Redes /24 distintas",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          }
+        },
+        "overrides": []
+      }
     },
     {
-      "id": 3, "type": "table", "title": "Carpet bombing -- dispersión de destinos (v_agg_src_1m)",
-      "description": "uniq_dst_nets alto sobre un origen: la firma de carpet bombing (D-2/D-3 -- la cardinalidad de red vive solo en agg_src_1m, agg_src_10s no la tiene). ddos.carpet_bombing corre sobre esta misma fuente.",
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 6 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT isp_ip_str(src_ip) AS \"Origen\", customer_id AS \"Cliente\", max(uniq_dst_nets) AS \"Redes /24 distintas\", max(uniq_dst_ips) AS \"IPs distintas\", round(max(pps), 1) AS \"pps pico\" FROM isp.v_agg_src_1m WHERE $__timeFilter(window_start) AND flow_dir = 'outbound' AND src_scope = 'customer' GROUP BY \"Origen\", \"Cliente\" HAVING \"Redes /24 distintas\" > 0 ORDER BY \"Redes /24 distintas\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:ddos:A3', use_query_cache = 1, query_cache_ttl = 30"
-      }],
-      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
-                   "sortBy": [{ "displayName": "Redes /24 distintas", "desc": true }] },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": true, "inspect": false } }, "overrides": [] }
-    },
-    {
-      "id": 4, "type": "table", "title": "Reflexión -- servicios propios respondiendo con amplificación",
-      "description": "isp.v_agg_src_port_1m: amp_factor_bytes (resp_bytes/req_bytes), resp_pps, uniq_peer_resp (víctimas potenciales -- E10 §4.6 lo llama uniq_peers_out) y request_side_visible. Ver la nota del panel de arriba sobre el desvío de nombres spec/esquema.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT isp_svc_str(proto, svc_port) AS \"Servicio\", isp_ip_str(svc_ip) AS \"IP propia\", customer_id AS \"Cliente\", round(max(resp_pps), 1) AS \"resp pps pico\", round(max(amp_factor_bytes), 1) AS \"Factor amp (bytes)\", max(uniq_peer_resp) AS \"Víctimas potenciales (uniq_peer_resp)\", max(uniq_peer_req) AS \"Peers entrantes (uniq_peer_req)\", max(request_side_visible) AS \"Pata entrante visible\" FROM isp.v_agg_src_port_1m WHERE $__timeFilter(window_start) AND src_scope = 'customer' AND resp_packets > 0 GROUP BY \"Servicio\", \"IP propia\", \"Cliente\" ORDER BY \"Factor amp (bytes)\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:ddos:A4', use_query_cache = 1, query_cache_ttl = 30"
-      }],
-      "options": { "showHeader": true, "footer": { "show": true, "reducer": ["count"], "fields": "" },
-                   "sortBy": [{ "displayName": "Factor amp (bytes)", "desc": true }] },
-      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" },
-                                                  "filterable": true, "inspect": false } },
+      "id": 4,
+      "type": "table",
+      "title": "Reflexión -- servicios propios respondiendo con amplificación",
+      "description": "Servicios propios que RESPONDEN (isp.v_agg_src_port_1m une la pata entrante y la saliente del mismo puerto). Ordena por resp_pps, que es la condición 1 real del gate de los detectores refl.*; antes ordenaba por el factor de amplificación, lo que seleccionaba por construcción las 50 filas SIN pata entrante -- justo aquellas cuyo factor no significa nada, porque el denominador req_bytes es 0. \"Factor amp (bytes)\" ahora se calcula sobre las sumas del grupo y queda VACÍO cuando no hubo un solo byte entrante en todo el rango: vacío = no medible, no cero. \"Ventanas con pata entrante (%)\" reemplaza al semáforo 0/1 anterior, que se agregaba con max() por separado del factor y podía mostrar verde junto a un número tomado de otra ventana que no tuvo pata entrante. \"Bytes/paquete resp\" es la condición 2 del mismo gate y antes no se mostraba en ningún panel.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT isp_svc_str(proto, svc_port) AS \"Servicio\", isp_ip_str(svc_ip) AS \"IP propia\", argMax(customer_id, resp_packets) AS \"Cliente\", round(max(resp_pps), 1) AS \"resp pps pico\", if(sum(req_bytes) > 0, round(sum(resp_bytes) / sum(req_bytes), 1), NULL) AS \"Factor amp (bytes)\", round(sum(resp_bytes) / greatest(sum(resp_packets), 1)) AS \"Bytes/paquete resp\", max(uniq_peer_resp) AS \"Víctimas potenciales (pico)\", round(100 * countIf(request_side_visible = 1) / count()) AS \"Ventanas con pata entrante (%)\" FROM isp.v_agg_src_port_1m WHERE $__timeFilter(window_start) AND src_scope = 'customer' AND resp_packets > 0 GROUP BY \"Servicio\", \"IP propia\" ORDER BY \"resp pps pico\" DESC LIMIT 50 SETTINGS log_comment = 'secisp:ddos:A4', use_query_cache = 1, query_cache_ttl = 30"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": true,
+          "reducer": [
+            "count"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Factor amp (bytes)",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          }
+        },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "Pata entrante visible" },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ventanas con pata entrante (%)"
+            },
             "properties": [
-              { "id": "description", "value": "0 = el router solo exportó una dirección del flujo (o no llegó la pata entrante todavía): el factor de amplificación de esta fila NO significa nada -- E08 §4.6.6/D-19. 1 = ambas patas visibles, el número es confiable." },
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
-                  { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "description",
+                "value": "Porcentaje de ventanas del rango en las que se vio tráfico entrante hacia este servicio. Por debajo de 100 el \"Factor amp\" está calculado sobre un subconjunto; en 0 no es medible y sale vacío. Un número bajo señala exportación de una sola dirección o patas en lados opuestos del NAT (E08 §4.6.3), no un ataque."
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 50
+                    },
+                    {
+                      "color": "green",
+                      "value": 99
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Factor amp (bytes)"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "no medible"
+              }
             ]
           }
         ]
       }
     },
     {
-      "id": 5, "type": "stat", "title": "% de filas de reflexión SIN la pata entrante visible",
+      "id": 5,
+      "type": "stat",
+      "title": "% de filas de reflexión SIN la pata entrante visible",
       "description": "Fracción de (servicio, ventana) con request_side_visible = 0: el amp_factor de esas filas no es interpretable (E08 §4.6.3 -- exportación de una sola dirección, o patas en lados opuestos del NAT, P6 nota E1). Un número alto acá dice que hay que revisar dónde está configurado el traffic-flow, no aflojar ningún umbral.",
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 26 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT round(100 * countIf(request_side_visible = 0) / greatest(count(), 1), 2) AS value FROM isp.v_agg_src_port_1m WHERE $__timeFilter(window_start) AND src_scope = 'customer' AND resp_packets > 0 LIMIT 1 SETTINGS log_comment = 'secisp:ddos:A5', use_query_cache = 1, query_cache_ttl = 30"
-      }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
-                   "textMode": "value", "colorMode": "background", "graphMode": "none" },
-      "fieldConfig": { "defaults": {
-        "unit": "percent", "min": 0, "max": 100,
-        "thresholds": { "mode": "absolute", "steps": [
-          { "color": "green", "value": null }, { "color": "orange", "value": 30 }, { "color": "red", "value": 60 } ] }
-      }, "overrides": [] }
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 20
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT round(100 * countIf(request_side_visible = 0) / greatest(count(), 1), 2) AS value FROM isp.v_agg_src_port_1m WHERE $__timeFilter(window_start) AND src_scope = 'customer' AND resp_packets > 0 LIMIT 1 SETTINGS log_comment = 'secisp:ddos:A5', use_query_cache = 1, query_cache_ttl = 30"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^value$/"
+        },
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 60
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     },
     {
-      "id": 6, "type": "stat", "title": "sampling_max observado (ventana corta)",
+      "id": 6,
+      "type": "stat",
+      "title": "sampling_max observado (ventana corta)",
       "description": "Piso del muestreo NetFlow/sFlow vigente en la ventana: 1 = sin muestreo. Un valor alto degrada silenciosamente la cardinalidad de todos los paneles de esta página (D-6/D-26) -- referencia rápida antes de leer cualquier número de arriba como exacto.",
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 26 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT max(sampling_max) AS value FROM isp.v_agg_src_10s WHERE $__timeFilter(window_start) LIMIT 1 SETTINGS log_comment = 'secisp:ddos:A6', use_query_cache = 1, query_cache_ttl = 30"
-      }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
-                   "textMode": "value", "colorMode": "background", "graphMode": "none" },
-      "fieldConfig": { "defaults": {
-        "thresholds": { "mode": "absolute", "steps": [
-          { "color": "green", "value": null }, { "color": "orange", "value": 2 }, { "color": "red", "value": 10 } ] }
-      }, "overrides": [] }
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 20
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT max(sampling_max) AS value FROM isp.v_agg_src_10s WHERE $__timeFilter(window_start) LIMIT 1 SETTINGS log_comment = 'secisp:ddos:A6', use_query_cache = 1, query_cache_ttl = 30"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^value$/"
+        },
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     },
     {
-      "id": 7, "type": "stat", "title": "uniq_dst_nets máximo observado (carpet bombing)",
-      "description": "El pico de dispersión de red de un solo origen en la ventana -- referencia rápida del umbral de ddos.carpet_bombing sin tener que leer la tabla completa de arriba.",
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 26 },
-      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "secisp-clickhouse" },
-      "targets": [{
-        "refId": "A", "format": 1, "queryType": "table", "editorType": "sql",
-        "rawSql": "SELECT max(uniq_dst_nets) AS value FROM isp.v_agg_src_1m WHERE $__timeFilter(window_start) AND flow_dir = 'outbound' AND src_scope = 'customer' LIMIT 1 SETTINGS log_comment = 'secisp:ddos:A7', use_query_cache = 1, query_cache_ttl = 30"
-      }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/" },
-                   "textMode": "value", "colorMode": "value", "graphMode": "none" },
-      "fieldConfig": { "defaults": {
-        "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] }
-      }, "overrides": [] }
+      "id": 7,
+      "type": "stat",
+      "title": "uniq_dst_nets máximo observado (dispersión bruta)",
+      "description": "Pico de redes /24 distintas alcanzado por un solo origen en la ventana. NO es un umbral de disparo de ddos.carpet_bombing: en ese detector uniq_dst_nets aparece una sola vez y con el signo invertido -- cuando no hay dato de ASN (despliegue sin MMDB), el fallback es asnPass = UniqDstNets <= 4 (internal/detect/ddos/carpet.go). O sea que un valor ALTO acá significa que el detector va a DESCARTAR al candidato, no que lo va a marcar. Sirve como referencia de dispersión bruta de la red, nada más. La fuente retiene 6 h (TTL); un rango más largo se trunca sin aviso.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 20
+      },
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "secisp-clickhouse"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "queryType": "table",
+          "editorType": "sql",
+          "rawSql": "SELECT max(uniq_dst_nets) AS value FROM isp.v_agg_src_1m WHERE $__timeFilter(window_start) AND flow_dir = 'outbound' AND src_scope = 'customer' LIMIT 1 SETTINGS log_comment = 'secisp:ddos:A7', use_query_cache = 1, query_cache_ttl = 30"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^value$/"
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     }
   ]
 }
