@@ -76,25 +76,91 @@ groups:
           runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-10-motor-no-cierra-ventanas.md"
 
       - alert: SecDetectLag
-        expr: sec_detect_lag_seconds > 300
+        # El umbral es POR DETECTOR, no un 300 plano: sec_detect_lag_seconds
+        # es un diente de sierra que sube hasta EffectiveCadence + grace +
+        # tick con el detector SANO, y las cadencias efectivas reales van de
+        # 10 s (ddos.src_flood) a 3600 s (anomaly.new_service). Con 300 fijo,
+        # cinco de los 28 detectores quedaban en falso positivo permanente.
+        # `cadencia + 300` es "más de cinco minutos por detrás de su propio
+        # ciclo", el mismo criterio que isp.v_ops_blind aplica con
+        # dim_detectors.cadence_seconds.
+        #
+        # SIN on(detector_id) A PROPÓSITO: las tres series salen del mismo
+        # target (job="secisp", role="engine"), así que el matching por
+        # defecto ya es uno-a-uno. Poner on() DESCARTARÍA job/instance/role
+        # del resultado, y alertmanager.yml tiene una inhibición con
+        # `equal: [instance]` sobre component=~"sink|detect|mitigate" que
+        # dejaría de casar.
+        #
+        # `and sec_detect_mode != 0` excluye los detectores en off, que el
+        # motor ni planifica (engine.go: "el detector ni corre"): su
+        # window_end queda congelado y sin esta guarda dispararían para
+        # siempre. Es la contraparte del WHERE mode != 'off' de la vista.
+        expr: |
+          (sec_detect_lag_seconds > sec_detect_cadence_seconds + 300)
+            and sec_detect_mode != 0
         for: 5m
         labels:
           severity: critical
           component: detect
           code: SEC-OPS-002
         annotations:
-          summary: "El motor de detección no cierra ventanas hace {{ $value | humanizeDuration }}"
+          summary: "{{ $labels.detector_id }} no cierra una ventana hace {{ $value | humanizeDuration }}"
           description: >-
-            sec_detect_lag_seconds{detector_id} mide now() - window_end de
-            la ÚLTIMA ventana evaluada EN VIVO de cada detector (E05 §4.13,
-            "el ÚLTIMO valor observado gana"). Por encima de 5 minutos, ese
-            detector quedó atrás del presente: catch-up excedido, breaker
-            abierto, o el motor mismo dejó de tickear.
+            sec_detect_lag_seconds{detector_id} es la ANTIGÜEDAD de la última
+            ventana que ese detector evaluó con éxito: now() del scrape menos
+            su window_end, recalculado en cada scrape, así que crece mientras
+            no cierre una ventana nueva. Por encima de su propia cadencia más
+            5 minutos, ese detector quedó atrás del presente: catch-up
+            excedido, breaker abierto, guarda de ingesta activa, o el motor
+            mismo dejó de tickear. Si NINGÚN detector reporta, la que dispara
+            es SecDetectSinSeries, no ésta.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-10-motor-no-cierra-ventanas.md"
+
+      - alert: SecDetectSinSeries
+        # La red que SecDetectLag no puede tender sobre sí misma: si el motor
+        # muere, no queda ninguna serie sec_detect_* y una comparación sin
+        # match no dispara -- un silencio idéntico a "todo bien". Cubre dos
+        # casos que up{role="engine"} solo no distingue: el proceso muerto, y
+        # el proceso EQUIVOCADO contestando en el puerto (secisp-collector@
+        # bindea SEC_METRICS_ADDR=127.0.0.1:9102 durante un hand-off de
+        # binario, el mismo endpoint que prometheus.yml etiqueta role=engine:
+        # ahí up=1 y sec_detect_* no existe).
+        expr: absent(sec_detect_lag_seconds)
+        for: 5m
+        labels:
+          severity: critical
+          component: detect
+          code: SEC-OPS-002
+        annotations:
+          summary: "El motor de detección no publica una sola serie sec_detect_lag_seconds"
+          description: >-
+            absent(sec_detect_lag_seconds): ningún detector reporta atraso, lo
+            que NO quiere decir que estén al día -- quiere decir que no hay
+            nadie midiendo. Con el motor caído todas las reglas basadas en
+            sec_detect_* quedan mudas a la vez, así que ésta es la única que
+            puede hablar. Empezá por el paso 4 de la confirmación de RB-10
+            (curl al :9102 y systemctl status secisp-engine).
           runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-10-motor-no-cierra-ventanas.md"
 
       - alert: SecDetectStarved
+        # sec_detect_rows_read es un HISTOGRAMA (rowsReadBuckets): Prometheus
+        # expone _bucket/_sum/_count y NADA con el nombre base. La expr
+        # anterior usaba `rate(sec_detect_rows_read[15m])`, que no matchea
+        # ninguna serie; sum() sobre vector vacío devuelve vacío (no 0), así
+        # que la comparación == 0 no producía nada y la alerta NUNCA disparó.
+        # Verificado con promtool contra series _sum/_count reales.
+        #
+        # _sum es la magnitud (filas leídas) y _count el cardinal (una
+        # observación por cada detector-ventana que pasó por writePhase,
+        # aunque haya leído 0 filas). "No lee NINGUNA fila" es sobre la
+        # magnitud -> _sum. El término de _count afirma lo que el summary
+        # promete y la expr vieja nunca chequeó -- que el motor CORRE: sin
+        # él, un motor muerto también da _sum plano y esta alerta duplicaría
+        # a SecDetectSinSeries/SecEngineDown en vez de decir algo propio.
         expr: |
-          sum(rate(sec_detect_rows_read[15m])) == 0
+          sum(rate(sec_detect_rows_read_sum[15m])) == 0
+            and sum(rate(sec_detect_rows_read_count[15m])) > 0
             and sum(rate(sec_sink_rows_inserted_total[15m])) > 0
         for: 15m
         labels:

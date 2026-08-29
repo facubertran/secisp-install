@@ -370,6 +370,10 @@ FROM isp.v_agg_src_dst_svc_1m AS p;
 --     así que v_ops_blind la usa sin ajustar nada.
 --   - isp.v_exporter_status   -- 11_v_exporter_status.sql [E04].
 --   - isp.v_det_runs          -- 43_v_det.sql [E05].
+--   - isp.v_det_detectors     -- 43_v_det.sql [E05]. La agrega el fix de la
+--     rama "detección atrasada": aporta `cadence_seconds` (el presupuesto de
+--     atraso de cada detector) y `mode` (para excluir los que ni corren).
+--     Mismo archivo que v_det_runs, así que no suma un archivo nuevo a H-1.
 --   - isp.ops_reputation_self -- 39b_ops_reputation_self.sql [E04] (tabla,
 --     no vista -- v_reputation_self la envuelve con FINAL).
 -- Los cuatro números (39, 39b, 11, 43) son MENORES que 70: si alguno no
@@ -440,6 +444,89 @@ CREATE OR REPLACE VIEW isp.v_ops_blind
 -- todavía no existe a esta altura del layout (lo crea 95_roles_grants.sql).
 SQL SECURITY DEFINER
 AS
+WITH
+-- FIX (bug de la rama "detección atrasada"): el atraso REAL del motor, por
+-- detector, contra el presupuesto de CADA detector.
+--
+-- QUÉ ESTABA MAL. La versión anterior hacía
+--   (SELECT max(lag_s) FROM isp.v_det_runs WHERE evaluated_at >= now() - INTERVAL 30 MINUTE)
+-- y `lag_s` es `now() - window_end` recalculado en CADA consulta (43_v_det.sql).
+-- Como isp.ops_detect_state guarda UNA FILA POR DETECTOR Y POR VENTANA
+-- (ReplacingMergeTree ORDER BY (detector_id, window_start), 40_det.sql), la
+-- ventana de 30 min SIEMPRE contiene filas escritas hace ~29 min, cuyo lag_s
+-- hoy vale ~1800 s. O sea: `max(lag_s) > 300` era VERDADERO SIEMPRE en un
+-- motor sano, a los ~5 min de arrancar. Y al revés: con el motor MUERTO hace
+-- más de 30 min ninguna fila pasaba el filtro, `max()` sobre cero filas
+-- devuelve 0 en ClickHouse (misma trampa que documenta
+-- internal/detect/framework/state.go, que por eso acompaña su max con un
+-- count()), `0 > 300` era falso y la vista publicaba 'OK'. La ficha se
+-- encendía con todo bien y se apagaba con el motor caído. Reproducido y
+-- corregido contra ClickHouse 24.8 real.
+--
+-- QUÉ MIDE AHORA. Por cada detector, `now() - max(window_end)` sobre las
+-- corridas que CUENTAN COMO PROGRESO (`status IN ('ok','skipped')`): es
+-- literalmente el watermark del motor (internal/detect/framework/state.go) y
+-- el mismo criterio del check `detect_watermark` del watchdog
+-- (internal/obs/checks/freshness.go). 'error'/'timeout'/'pending'/'degraded'
+-- NO avanzan el watermark, así que contarlos pintaría de al-día a un detector
+-- trabado.
+--
+-- POR QUÉ EL UMBRAL ES POR DETECTOR Y NO UN 300 FIJO. El pico de atraso SANO
+-- de un detector es `EffectiveCadence + Grace + tick`, y las cadencias reales
+-- van de 10 s (ddos.src_flood) a 3600 s (anomaly.new_service/service_wave),
+-- pasando por 300 s (los siete smtp.* y scan.sweep_slow). Un 300 fijo deja
+-- CINCO de los 28 detectores en falso positivo permanente. `cadence_seconds`
+-- de isp.dim_detectors ya es la cadencia EFECTIVA (catalog.go la escribe con
+-- `spec.Window.EffectiveCadence()`, que resuelve Cadence=0 a Length), así que
+-- `cadence_seconds + 300` es "más de cinco minutos por detrás de su propio
+-- ciclo" y cubre el Grace más grande del repo (90 s, anomaly.level_shift).
+--
+-- POR QUÉ SE EXCLUYE mode='off'. El motor saltea esos detectores antes de
+-- planificar ("el detector ni corre", internal/detect/framework/engine.go), o
+-- sea que su watermark queda congelado para siempre: sin este filtro, un
+-- detector deshabilitado a propósito dispararía la alerta eternamente. El
+-- INNER JOIN además excluye solo a los detectores sembrados en dim_detectors
+-- que nunca corrieron en este despliegue, y a la fila sintética
+-- '__replay_cursor__' (que se escribe con status='ok' y window_end congelado
+-- al terminar el replay del WAL: sin excluirla sería el máximo eterno; misma
+-- exclusión que internal/obs/checks/freshness.go).
+--
+-- POR QUÉ EL JOIN VA ADENTRO DE UN `WITH` ESCALAR Y NO EN EL FROM. Verificado
+-- contra ClickHouse 24.8 real: con un JOIN en el nivel superior de la vista,
+-- `SELECT *` falla con "Code: 80 ... returned Nullable column having not
+-- Nullable type in structure ... if query from view has JOIN, it may be cause
+-- by different values of 'join_use_nulls'", y las que rompen son las OTRAS
+-- columnas de subquery escalar (exporters_down/exporters_total/
+-- detect_failures_30m), que este fix ni toca. Anidado dentro del `WITH` el
+-- nivel superior sigue teniendo un solo FROM y la vista responde bien.
+--
+-- LA VENTANA DE 1 DÍA acota el GROUP BY (window_start es la clave de
+-- PARTITION BY, así que poda particiones). Un detector atrasado MÁS de un día
+-- desaparece de este conjunto y cae en la rama 'CIEGO: sin detección', que es
+-- la lectura correcta a esa altura.
+(
+    SELECT (max(atraso_s), countIf(atraso_s > d.cadence_seconds + 300), count())
+    FROM (
+        SELECT detector_id,
+               dateDiff('second', max(window_end), now()) AS atraso_s
+        FROM isp.v_det_runs
+        WHERE status IN ('ok', 'skipped')
+          AND detector_id != '__replay_cursor__'
+          AND window_start >= now() - INTERVAL 1 DAY
+        GROUP BY detector_id
+    ) AS w
+    INNER JOIN (
+        -- CAST(... AS String) despega el LowCardinality de la clave y del
+        -- predicado, por la misma razón que 43_v_det.sql lo hace en
+        -- is_actionable (ClickHouse rechaza LowCardinality(UInt8) de salida).
+        SELECT CAST(detector_id AS String) AS detector_id, cadence_seconds
+        FROM isp.v_det_detectors
+        WHERE CAST(mode AS String) != 'off'
+    ) AS d USING (detector_id)
+) AS det,
+(
+    SELECT count() FROM isp.v_det_detectors WHERE CAST(mode AS String) != 'off'
+) AS detectores_habilitados
 SELECT
     h.ingest_lag_seconds                                    AS ingest_lag_s,
     h.unknown_scope_5m                                      AS unknown_scope_5m,
@@ -447,10 +534,11 @@ SELECT
     (SELECT count() FROM isp.v_exporter_status
        WHERE status != 'ok')                                AS exporters_down,
     (SELECT count() FROM isp.v_exporter_status)              AS exporters_total,
-    -- toInt64(): ver GOTCHA DE TIPO en el comentario de cabecera de este
-    -- bloque -- v_det_runs.lag_s es Int32, el contrato pide Int64.
-    toInt64((SELECT max(lag_s) FROM isp.v_det_runs
-       WHERE evaluated_at >= now() - INTERVAL 30 MINUTE))    AS detect_lag_s,
+    -- toInt64(): el contrato de §5.1 fija `detect_lag_s Int64`. dateDiff ya
+    -- devuelve Int64 (no la resta de DateTime, que da Int32 -- ver el GOTCHA
+    -- DE TIPO de la cabecera), pero el cast queda explícito para que el
+    -- DESCRIBE del criterio de aceptación no dependa de eso.
+    toInt64(det.1)                                           AS detect_lag_s,
     (SELECT count() FROM isp.v_det_runs
        WHERE evaluated_at >= now() - INTERVAL 30 MINUTE
          AND status IN ('error','timeout','breaker_open'))  AS detect_failures_30m,
@@ -461,13 +549,18 @@ SELECT
            WHERE status != 'ok') > 0,                  'DEGRADADO: exportador mudo',
         h.unknown_scope_5m > 0
           AND h.unknown_scope_5m > h.flags_flows_5m,   'CIEGO: prefijos de cliente sin cargar',
+        -- Hay detectores habilitados pero NINGUNO tiene una sola ventana
+        -- evaluada en el último día: motor detenido hace rato, recién
+        -- instalado, o atrasado más allá de la ventana de arriba. Es CIEGO,
+        -- no DEGRADADO: no se está detectando nada. Va ANTES de las dos ramas
+        -- de detección porque con cero corridas las dos darían 0 y la vista
+        -- caería en 'OK' -- el falso negativo que este fix cierra.
+        detectores_habilitados > 0 AND det.3 = 0,      'CIEGO: sin detección',
         (SELECT count() FROM isp.v_det_runs
            WHERE evaluated_at >= now() - INTERVAL 30 MINUTE
              AND status IN ('error','timeout','breaker_open')) > 0,
                                                         'DEGRADADO: detector fallando',
-        (SELECT max(lag_s) FROM isp.v_det_runs
-           WHERE evaluated_at >= now() - INTERVAL 30 MINUTE) > 300,
-                                                        'DEGRADADO: detección atrasada',
+        det.2 > 0,                                      'DEGRADADO: detección atrasada',
         'OK')                                                AS status_text,
     multiIf(position(status_text, 'CIEGO') > 0, 2,
             position(status_text, 'DEGRADADO') > 0, 1,

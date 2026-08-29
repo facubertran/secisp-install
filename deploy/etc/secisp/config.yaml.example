@@ -183,3 +183,18 @@
 #   tol_precision: 0.02                           # SEC_EVALSET_TOL_PRECISION
 #   tol_mttd_factor: 1.20                         # SEC_EVALSET_TOL_MTTD_FACTOR
 #   pushgateway_url: ""                           # SEC_EVALSET_PUSHGATEWAY_URL — vacío = `evalset check` no empuja (T-226)
+
+# ── Licenciamiento (E13 §5.8) ────────────────────────────────────────────────
+# Los dos defaults ya son los correctos para una instalación estándar: este
+# bloque solo hace falta si la licencia o su marca de agua viven en otro lado.
+#
+# license.lic NO es un secreto (se instala 0644): su valor está en la firma
+# Ed25519, no en la confidencialidad. La marca de agua SÍ tiene que estar bajo
+# /var/lib/secisp -- /etc/secisp es de solo lectura para los roles bajo
+# ProtectSystem=strict, y PrivateTmp=true descarta /tmp.
+#
+# Un host sin licencia arranca y SIGUE MITIGANDO: solo quedan apagadas las
+# features opcionales. Para licenciarlo: `secisp license fingerprint`.
+# license:
+#   path: /etc/secisp/license.lic                          # SEC_LICENSE_PATH
+#   state_path: /var/lib/secisp/state/license.watermark    # SEC_LICENSE_STATE_PATH

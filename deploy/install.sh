@@ -165,6 +165,26 @@ else
     log "${ROUTERS_YAML} no existe todavía -- crearlo con 0600 root:secisp antes de habilitar el mitigador"
 fi
 
+# license.lic (T-441, E13-T07): el instalador NO lo puede generar -- es
+# node-locked y firmado, y el fingerprint sale del binario que este mismo script
+# está por instalar. Se conserva si ya está, y si no está solo se avisa: un host
+# sin licencia arranca igual y sigue mitigando, con las features opcionales
+# apagadas (internal/license/license.go).
+#
+# 0644 y no 0600 como routers.yaml, y la diferencia es deliberada: la licencia
+# firmada NO es un secreto -- su valor está en la firma, no en la
+# confidencialidad -- y los cuatro roles la leen como `secisp` sin
+# LoadCredential. /etc/secisp es 0755 root:secisp y la regla escrita en
+# docs/ops/instalacion.md es "nada adentro es secreto salvo routers.yaml".
+LICENSE_LIC="${ETC_DIR}/license.lic"
+if [ -e "${LICENSE_LIC}" ]; then
+    chown root:"${SECISP_GROUP}" "${LICENSE_LIC}" || true
+    chmod 0644 "${LICENSE_LIC}"
+    log "${LICENSE_LIC} ya existe, se conserva (0644 root:${SECISP_GROUP})"
+else
+    log "${LICENSE_LIC} no existe todavía -- ver el aviso del final de la instalación"
+fi
+
 # ─── 3. /var/lib/secisp/{wal,templates,state} ───────────────────────────────────────
 #
 # Los cuatro roles corren como `secisp` (systemd `User=secisp`, ReadWritePaths=
@@ -240,6 +260,16 @@ fi
 # ─── 6. Binario ─────────────────────────────────────────────────────────────────────
 log "copiando ${BIN_SRC} -> ${BIN_DST}"
 install -o root -g root -m 0755 "${BIN_SRC}" "${BIN_DST}"
+
+# Aviso de licencia: va ACÁ y no en el bloque de /etc/secisp de arriba porque el
+# comando que sugiere tiene que ser ejecutable en el momento en que se imprime,
+# y el binario recién existe a partir de la línea anterior.
+if [ ! -e "${LICENSE_LIC}" ]; then
+    log "sin licencia instalada en ${LICENSE_LIC}"
+    log "  el sistema va a arrancar y a MITIGAR igual; quedan apagadas las features opcionales"
+    log "  para licenciarlo:  ${BIN_DST} license fingerprint"
+    log "  y enviar el bundle que imprime para que emitan el license.lic"
+fi
 
 # ─── 7. Unidades systemd (las cinco de T-035), `systemctl enable` sin arrancar ──────
 log "instalando unidades systemd desde ${SYSTEMD_SRC_DIR}"

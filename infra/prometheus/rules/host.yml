@@ -63,6 +63,28 @@ groups:
             a rechazar inserts por falta de espacio para nuevas parts.
           runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-09-wal-cerca-de-capacidad.md"
 
+      - alert: SecEngineDown
+        # No existía ninguna regla `up` para el motor: con secisp-engine
+        # caído, TODAS las reglas basadas en sec_detect_* se quedan sin
+        # series a la vez y ninguna dispara. Calcada de SecWatchdogDown, con
+        # el role exacto de prometheus.yml (job "secisp", role engine sobre
+        # 127.0.0.1:9102). Su complemento es SecDetectSinSeries (detect.yml),
+        # que cubre el caso de up=1 con el proceso equivocado contestando.
+        expr: up{job="secisp",role="engine"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          component: detect
+          code: SEC-OPS-002
+        annotations:
+          summary: "Prometheus no puede scrapear al motor de detección"
+          description: >-
+            up{job="secisp",role="engine"}=0: el proceso secisp-engine no
+            responde en 127.0.0.1:9102. Mientras esté así no se evalúa una
+            sola ventana, y ninguna otra alerta de detección puede avisarlo
+            porque todas leen métricas que este mismo proceso publica.
+          runbook_url: "https://git.terenet/security-isp/docs/runbooks/RB-10-motor-no-cierra-ventanas.md"
+
       - alert: SecWatchdogDown
         expr: up{job="secisp",role="watchdog"} == 0
         for: 3m
