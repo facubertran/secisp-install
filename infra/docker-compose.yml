@@ -230,7 +230,7 @@ services:
       # (gitignored, Compose lo mergea solo si existe), nunca acá: ese es un
       # cambio de postura de seguridad puntual de UN despliegue, no un
       # default que todo clone de este repo tenga que heredar.
-      GF_SERVER_HTTP_ADDR: "0.0.0.0"
+      GF_SERVER_HTTP_ADDR: "127.0.0.1"
     volumes:
       - grafana_data:/var/lib/grafana
       # Relativo a ESTE archivo (infra/), no al repo: en producción

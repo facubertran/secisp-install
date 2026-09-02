@@ -28,9 +28,9 @@
 #   owner   Quién es responsable de la entrada (equipo o persona).
 
 never_block:
-  - prefix: 10.215.6.0/24
-    reason: "Servidores"
+  - prefix: 203.0.113.0/28
+    reason: "DNS recursivos y MX propios"
     owner: noc
-#  - prefix: 2001:db8:ffff::/48
-#    reason: "infraestructura de gestión (monitoreo, jump hosts)"
-#    owner: noc
+  - prefix: 2001:db8:ffff::/48
+    reason: "infraestructura de gestión (monitoreo, jump hosts)"
+    owner: noc

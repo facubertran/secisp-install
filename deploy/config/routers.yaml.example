@@ -42,6 +42,18 @@
 #                    DisabledReason=missing_credential) sin invalidar el resto del
 #                    archivo: el mitigador sigue operando con los routers que sí
 #                    tienen contraseña.
+#                    De dónde sale esa variable: al daemon se la da systemd
+#                    (EnvironmentFile=-/etc/secisp/mitigator.env). Los subcomandos
+#                    de `secisp mitigator` corridos a mano leen ESE MISMO archivo
+#                    como respaldo cuando la variable no está en el entorno, así
+#                    que NO hace falta anteponerles `set -a; . mitigator.env;
+#                    set +a` (y no conviene: eso vuelca las contraseñas de todos
+#                    los routers al entorno de cualquier proceso hijo de esa
+#                    shell, y bajo `sudo` ni siquiera sobrevive). Sí hace falta
+#                    poder LEER el archivo: es 0600 root:secisp, o sea root o un
+#                    usuario del grupo secisp -- el mismo requisito que ya impone
+#                    leer este routers.yaml. SEC_MIT_ENV_FILE reapunta el respaldo
+#                    en laboratorio.
 #   password         Opcional, desaconsejado. Contraseña literal; solo se usa si
 #                    password_env está vacío.
 #   tls.mode         verify | pin. "insecure" NO es un valor válido acá (T-393,

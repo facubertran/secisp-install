@@ -55,3 +55,53 @@ detect:
 # detectors:
 #   scan.horizontal:
 #     mode: shadow
+
+# Familia de detectores de escaneo (E06). El resto de las ~37 variables
+# SEC_DETECT_SCAN_* se deja en su default; acá va solo la que cambia el
+# COMPORTAMIENTO de accionamiento, no un umbral.
+scan:
+  # SEC_DETECT_SCAN_BLOCK_ON_FIRST_SCAN — accionar en la PRIMERA ventana en
+  # que el escaneo cruza su umbral, en vez de exigir dos.
+  #
+  # Para qué: los mails de abuso por escaneo saliente llegan por el primer
+  # escaneo, no por el segundo. Por default la familia scan.* necesita dos
+  # ventanas de 60 s, así que el bloqueo llega ~140 s después del primer
+  # paquete; con esto llega en ~80 s (el piso físico de ventana 60 s + grace
+  # 15 s + tick, que NO se puede bajar por config).
+  #
+  # Apaga las dos compuertas que exigen la segunda ventana, juntas:
+  #   1. la etapa 9 del pipeline de supresión, que hoy escribe la primera
+  #      ventana con suppress_reason='insufficient_persistence'
+  #   2. el amortiguador single_window ×0,80 de E06 §4.10, que dejaba en
+  #      'below_action_score' a todo escaneo que cruzara su umbral justo
+  # Es equivalente a min_consecutive_default: 1 pero ACOTADO a scan.*: el
+  # global también pondría en primera ventana a los once detectores
+  # ddos.*/refl.*.
+  #
+  # Lo que NO hace: no cambia el modo del detector (en `shadow` no acciona
+  # nada, ver el bloque `detectors:` de arriba), no toca warmup_seconds, ni
+  # SEC_MIT_ENABLED/SEC_MIT_DRY_RUN del mitigador, ni baja ningún umbral del
+  # gate (un escaneo que no cruza horiz_threshold no se detecta nunca).
+  #
+  # Costo: habilita el falso positivo que la regla de dos ventanas existía
+  # para evitar (E05 D8) — el cliente que hace un nmap de 30 s a su propio
+  # VPS se bloquea. Medirlo ANTES de prenderla, sobre los eventos que el
+  # motor ya viene escribiendo:
+  #
+  #   SELECT if(suppress_reason = 'shadow_mode',
+  #             JSONExtractString(evidence, 'would_suppress_as'),
+  #             suppress_reason)          AS motivo,
+  #          count()
+  #     FROM isp.v_det_events
+  #    WHERE detector_id LIKE 'scan.%'
+  #      AND window_start > now() - INTERVAL 7 DAY
+  #    GROUP BY motivo ORDER BY 2 DESC;
+  #
+  # El `if` es necesario: con el detector en shadow, suppress_reason es
+  # siempre 'shadow_mode' y la razón real vive en evidence.would_suppress_as.
+  #
+  # La fila 'insufficient_persistence' es la COTA SUPERIOR de bloqueos nuevos
+  # por semana. No sumarle 'below_action_score': esas filas ya pasaron la
+  # etapa 9, traen windows_hit >= 2 y nunca pagaron el ×0,80 — prender esto
+  # no las mueve.
+  block_on_first_scan: false
